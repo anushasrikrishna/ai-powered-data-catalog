@@ -22,12 +22,13 @@ class SQLServerConnector(BaseConnector):
 		self,
 		host: str,
 		database: str,
-		username: str,
-		password: str,
-		port: int = 1433,
+		username: str | None = None,
+		password: str | None = None,
+		port: int | None = 1433,
 		driver: str = "ODBC Driver 18 for SQL Server",
 		encrypt: str = "yes",
 		trust_server_certificate: str = "yes",
+		windows_auth: bool = False,
 		engine: Engine | None = None,
 	) -> None:
 		self.host = host
@@ -38,9 +39,28 @@ class SQLServerConnector(BaseConnector):
 		self.driver = driver
 		self.encrypt = encrypt
 		self.trust_server_certificate = trust_server_certificate
+		self.windows_auth = windows_auth
 		self.engine = engine or self._create_engine()
 
+	def _is_localdb_host(self) -> bool:
+		return self.host.strip().lower().startswith("(localdb)\\")
+
 	def _build_url(self) -> URL:
+		query = {
+			"driver": self.driver,
+			"Encrypt": self.encrypt,
+			"TrustServerCertificate": self.trust_server_certificate,
+		}
+		if self.windows_auth:
+			query["Trusted_Connection"] = "yes"
+			port = None if self._is_localdb_host() else self.port
+			return URL.create(
+				"mssql+pyodbc",
+				host=self.host,
+				port=port,
+				database=self.database,
+				query=query,
+			)
 		return URL.create(
 			"mssql+pyodbc",
 			username=self.username,
@@ -48,12 +68,15 @@ class SQLServerConnector(BaseConnector):
 			host=self.host,
 			port=self.port,
 			database=self.database,
-			query={
-				"driver": self.driver,
-				"Encrypt": self.encrypt,
-				"TrustServerCertificate": self.trust_server_certificate,
-			},
+			query=query,
 		)
+
+	def _connection_error_message(self) -> str:
+		if self.windows_auth and self._is_localdb_host():
+			return "Unable to connect to SQL Server LocalDB. Verify the LocalDB instance name, database, ODBC driver, Windows permissions, and that the LocalDB instance is running."
+		if self.windows_auth:
+			return "Unable to connect to SQL Server using Windows Authentication. Verify host, port, database, Windows access, and ODBC driver."
+		return "Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
 
 	def _create_engine(self) -> Engine:
 		try:
@@ -99,7 +122,7 @@ class SQLServerConnector(BaseConnector):
 			return True
 		except Exception as exc:
 			raise ConnectionFailedError(
-				"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+				self._connection_error_message()
 			) from exc
 
 	def list_databases(self) -> list[str]:
@@ -119,7 +142,7 @@ class SQLServerConnector(BaseConnector):
 		except Exception as exc:
 			if self._is_connection_error(exc):
 				raise ConnectionFailedError(
-					"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+					self._connection_error_message()
 				) from exc
 			raise
 
@@ -144,7 +167,7 @@ class SQLServerConnector(BaseConnector):
 		except Exception as exc:
 			if self._is_connection_error(exc):
 				raise ConnectionFailedError(
-					"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+					self._connection_error_message()
 				) from exc
 			raise
 
@@ -157,7 +180,7 @@ class SQLServerConnector(BaseConnector):
 		except Exception as exc:
 			if self._is_connection_error(exc):
 				raise ConnectionFailedError(
-					"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+					self._connection_error_message()
 				) from exc
 			raise
 
@@ -182,7 +205,7 @@ class SQLServerConnector(BaseConnector):
 		except Exception as exc:
 			if self._is_connection_error(exc):
 				raise ConnectionFailedError(
-					"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+					self._connection_error_message()
 				) from exc
 			raise
 
@@ -211,7 +234,7 @@ class SQLServerConnector(BaseConnector):
 		except Exception as exc:
 			if self._is_connection_error(exc):
 				raise ConnectionFailedError(
-					"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+					self._connection_error_message()
 				) from exc
 			raise
 
@@ -223,6 +246,6 @@ class SQLServerConnector(BaseConnector):
 		except Exception as exc:
 			if self._is_connection_error(exc):
 				raise ConnectionFailedError(
-					"Unable to connect to SQL Server. Verify host, port, credentials, database, and ODBC driver."
+					self._connection_error_message()
 				) from exc
 			raise

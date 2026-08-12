@@ -32,6 +32,113 @@ class TestSQLServerConnectorUnit(unittest.TestCase):
         self.assertEqual(url.database, "catalog_demo")
         self.assertEqual(url.query.get("driver"), "ODBC Driver 18 for SQL Server")
 
+    def test_build_url_uses_sql_authentication_by_default(self) -> None:
+        url = self.connector._build_url()
+
+        self.assertEqual(url.username, "user")
+        self.assertEqual(url.password, "pass")
+        self.assertEqual(url.query.get("Encrypt"), "yes")
+        self.assertEqual(url.query.get("TrustServerCertificate"), "yes")
+        self.assertNotIn("Trusted_Connection", url.query)
+
+    def test_windows_auth_build_url_omits_credentials(self) -> None:
+        connector = SQLServerConnector(
+            host="localhost",
+            database="catalog_demo",
+            windows_auth=True,
+            driver="ODBC Driver 18 for SQL Server",
+            encrypt="no",
+            trust_server_certificate="no",
+            engine=self.engine,
+        )
+
+        url = connector._build_url()
+
+        self.assertIsNone(url.username)
+        self.assertIsNone(url.password)
+        self.assertEqual(url.query.get("Trusted_Connection"), "yes")
+        self.assertEqual(url.query.get("Encrypt"), "no")
+        self.assertEqual(url.query.get("TrustServerCertificate"), "no")
+
+    def test_windows_auth_normal_server_includes_port(self) -> None:
+        connector = SQLServerConnector(
+            host="localhost",
+            port=1433,
+            database="catalog_demo",
+            windows_auth=True,
+            engine=self.engine,
+        )
+
+        url = connector._build_url()
+
+        self.assertEqual(url.host, "localhost")
+        self.assertEqual(url.port, 1433)
+        self.assertEqual(url.query.get("Trusted_Connection"), "yes")
+
+    def test_windows_auth_localdb_omits_port_and_credentials(self) -> None:
+        connector = SQLServerConnector(
+            host=r"(localdb)\MSSQLLocalDB",
+            database="BusBookingETL",
+            windows_auth=True,
+            engine=self.engine,
+        )
+
+        url = connector._build_url()
+
+        self.assertTrue(connector._is_localdb_host())
+        self.assertEqual(url.host, r"(localdb)\MSSQLLocalDB")
+        self.assertIsNone(url.port)
+        self.assertIsNone(url.username)
+        self.assertIsNone(url.password)
+        self.assertEqual(url.query.get("Trusted_Connection"), "yes")
+
+    def test_windows_auth_detects_other_localdb_instance(self) -> None:
+        connector = SQLServerConnector(
+            host=r"(LOCALDB)\TestInstance",
+            database="catalog_demo",
+            windows_auth=True,
+            engine=self.engine,
+        )
+
+        self.assertTrue(connector._is_localdb_host())
+        self.assertIsNone(connector._build_url().port)
+
+    def test_localdb_windows_auth_does_not_require_port(self) -> None:
+        connector = SQLServerConnector(
+            host=r"(localdb)\MSSQLLocalDB",
+            database="catalog_demo",
+            windows_auth=True,
+            port=None,
+            engine=self.engine,
+        )
+
+        self.assertIsNone(connector._build_url().port)
+
+    def test_localdb_windows_auth_error_is_safe_and_specific(self) -> None:
+        connector = SQLServerConnector(
+            host=r"(localdb)\MSSQLLocalDB",
+            database="catalog_demo",
+            windows_auth=True,
+            engine=self.engine,
+        )
+        self.engine.connect.side_effect = Exception("login failed")
+
+        with self.assertRaisesRegex(ConnectionFailedError, "SQL Server LocalDB") as context:
+            connector.test_connection()
+        self.assertNotIn("login failed", str(context.exception))
+
+    def test_windows_auth_connection_failure_is_safe(self) -> None:
+        connector = SQLServerConnector(
+            host="localhost",
+            database="catalog_demo",
+            windows_auth=True,
+            engine=self.engine,
+        )
+        self.engine.connect.side_effect = Exception("login failed")
+
+        with self.assertRaisesRegex(ConnectionFailedError, "Windows Authentication"):
+            connector.test_connection()
+
     def test_test_connection_returns_true(self) -> None:
         connection = MagicMock()
         self.engine.connect.return_value.__enter__.return_value = connection

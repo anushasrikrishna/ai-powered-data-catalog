@@ -5,8 +5,14 @@ from ui.icons import svg_icon
 
 def render_app_header() -> None:
     """Render the persistent product header and the single theme control."""
+    dark_mode = st.session_state.get("dark_mode", False)
+    next_icon = ":material/light_mode:" if dark_mode else ":material/dark_mode:"
+
+    def toggle_theme() -> None:
+        st.session_state["dark_mode"] = not st.session_state.get("dark_mode", False)
+
     with st.container():
-        left, right = st.columns([4, 1], vertical_alignment="center")
+        left, right = st.columns([4, 0.35], vertical_alignment="center")
         with left:
             st.markdown(
                 f'<div class="app-header"><div class="app-brand"><span class="brand-mark">{svg_icon("dashboard", 18)}</span>'
@@ -14,7 +20,13 @@ def render_app_header() -> None:
                 unsafe_allow_html=True,
             )
         with right:
-            st.toggle("Dark mode", key="dark_mode", help="Switch between light and dark application themes.")
+            st.button(
+                "",
+                icon=next_icon,
+                key="theme_mode_button",
+                on_click=toggle_theme,
+                type="tertiary",
+            )
 
 
 def render_page_header(title: str, subtitle: str, description: str, icon: str | None = None) -> None:
