@@ -1,9 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from metadata.models import ColumnMetadata
-
-
 class BaseConnector(ABC):
     """Common interface implemented by every database connector."""
 
@@ -32,8 +29,8 @@ class BaseConnector(ABC):
         self,
         schema_name: str,
         table_name: str,
-    ) -> list[ColumnMetadata]:
-        """Return normalized column metadata."""
+    ) -> list[dict[str, Any]]:
+        """Return source column metadata dictionaries."""
         raise NotImplementedError
 
     @abstractmethod
