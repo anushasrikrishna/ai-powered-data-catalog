@@ -9,6 +9,10 @@ class ColumnMetadata(BaseModel):
     nullable: bool
     ordinal_position: int
     sample_values: list[Any] = Field(default_factory=list)
+    null_count: int | None = None
+    distinct_count: int | None = None
+    minimum: Any | None = None
+    maximum: Any | None = None
 
 
 class TableMetadata(BaseModel):
@@ -16,6 +20,6 @@ class TableMetadata(BaseModel):
     database_name: str
     schema_name: str
     table_name: str
-    table_type: str = "BASE TABLE"
+    table_type: str = "TABLE"
     row_count: int | None = None
     columns: list[ColumnMetadata] = Field(default_factory=list)
