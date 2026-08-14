@@ -1,6 +1,28 @@
 import streamlit as st
+from contextlib import contextmanager
+from html import escape
+from pathlib import Path
 
 from ui.icons import svg_icon
+
+LOADER_SVG_PATH = Path(__file__).resolve().parent / "assets" / "loader.svg"
+LOADER_SVG = LOADER_SVG_PATH.read_text(encoding="utf-8")
+
+
+@contextmanager
+def loading_indicator(message: str):
+    placeholder = st.empty()
+    with placeholder.container():
+        st.markdown(
+            f'<div role="status" aria-live="polite" style="align-items:center;color:var(--text);display:flex;gap:.5rem;line-height:1.5;">'
+            f'<span style="color:var(--spinner-active);display:inline-flex;height:1.25rem;width:1.25rem;">{LOADER_SVG}</span>'
+            f'<span>{escape(message)}</span></div>',
+            unsafe_allow_html=True,
+        )
+    try:
+        yield
+    finally:
+        placeholder.empty()
 
 
 def render_app_header() -> None:
@@ -27,6 +49,20 @@ def render_app_header() -> None:
                 on_click=toggle_theme,
                 type="tertiary",
             )
+
+
+def render_app_navigation(nav_items: list[tuple[object, str, str]]) -> None:
+    st.markdown('<div class="app-nav-spacer"></div>', unsafe_allow_html=True)
+    columns = st.columns(len(nav_items), gap="small", vertical_alignment="center")
+    for column, (page, label, icon) in zip(columns, nav_items):
+        with column:
+            st.page_link(
+                page,
+                label=label,
+                icon=icon,
+                use_container_width=True,
+            )
+    st.markdown('<div class="app-nav-divider"></div>', unsafe_allow_html=True)
 
 
 def render_page_header(title: str, subtitle: str, description: str, icon: str | None = None) -> None:
@@ -86,8 +122,8 @@ def render_stepper(steps: list[str]) -> None:
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
-def render_get_started_workflow(steps: list[tuple[str, str]]) -> None:
-    parts = ['<div class="get-started-workflow">']
+def render_get_started_workflow(steps: list[tuple[str, str]], class_name: str = "get-started-workflow") -> None:
+    parts = [f'<div class="{class_name}">']
     for index, (icon, title) in enumerate(steps):
         parts.append(
             f'<div class="workflow-item"><div class="workflow-number">{index + 1:02d}</div>'

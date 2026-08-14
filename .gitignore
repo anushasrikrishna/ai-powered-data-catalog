@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime metadata catalog database
+storage/catalog_metadata.db
+storage/catalog_metadata.db-*
