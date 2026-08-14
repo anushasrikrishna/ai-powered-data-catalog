@@ -49,3 +49,7 @@ set RUN_SQLSERVER_INTEGRATION_TESTS=1
 set RUN_POSTGRES_INTEGRATION_TESTS=1
 python -m unittest discover -s tests -p "test_*connector.py" -v
 ```
+
+## Phase 4 documentation backend (Person 1)
+
+The deterministic documentation backend consumes Phase 3 `TableMetadata` objects and produces structured table summaries, profile passthrough fields, and rule-based possible column categories. It requires no database connection or AI service. The supported categories are `Identifier`, `Contact Information`, `Date/Time`, `Financial/Measure`, `Quantity/Measure`, `Boolean/Flag`, `Name`, `Location`, `Text/Description`, and `Other`.
