@@ -1,23 +1,272 @@
+from __future__ import annotations
+
+from typing import Any
+
 import streamlit as st
 
-from ui.components import render_empty_state, render_page_header
+from metadata.models import TableMetadata
+from storage.repository import MetadataRepository
+from ui.components import render_empty_state, render_page_header, render_workspace_status
+
+
+ALL_SOURCES = "All Sources"
+ALL_DATABASES = "All Databases"
+ALL_SCHEMAS = "All Schemas"
+
+SOURCE_DISPLAY_NAME_BY_TYPE = {
+    "sqlserver": "SQL Server",
+    "postgresql": "PostgreSQL",
+    "snowflake": "Snowflake",
+}
+
+
+def _source_display_name(source_value: str) -> str:
+    normalized = source_value.strip().lower()
+    return SOURCE_DISPLAY_NAME_BY_TYPE.get(normalized, source_value)
+
+
+def _format_optional(value: Any) -> str:
+    if value is None:
+        return "-"
+    if value == "":
+        return "-"
+    return str(value)
+
+
+def _format_count(value: int | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value:,}"
+
+
+def _format_sample_values(values: list[Any]) -> str:
+    if not values:
+        return "-"
+    return ", ".join(_format_optional(value) for value in values[:5])
+
+
+def _dataset_identity(table_metadata: TableMetadata) -> tuple[str, str, str, str]:
+    return (
+        table_metadata.source_type,
+        table_metadata.database_name,
+        table_metadata.schema_name,
+        table_metadata.table_name,
+    )
+
+
+def _dataset_label(table_metadata: TableMetadata) -> str:
+    return (
+        f"{_source_display_name(table_metadata.source_type)} / "
+        f"{table_metadata.database_name} / "
+        f"{table_metadata.schema_name} / "
+        f"{table_metadata.table_name}"
+    )
+
+
+def _load_catalog() -> tuple[list[TableMetadata], Exception | None]:
+    try:
+        repository = MetadataRepository()
+        return repository.list_tables(), None
+    except Exception as exc:
+        return [], exc
+
+
+def _matches_search(table_metadata: TableMetadata, query: str) -> bool:
+    if not query:
+        return True
+
+    searchable_text = " ".join(
+        [
+            _source_display_name(table_metadata.source_type),
+            table_metadata.source_type,
+            table_metadata.database_name,
+            table_metadata.schema_name,
+            table_metadata.table_name,
+            table_metadata.table_type,
+            *[column.column_name for column in table_metadata.columns],
+            *[column.source_data_type for column in table_metadata.columns],
+            *[column.normalized_data_type for column in table_metadata.columns],
+        ]
+    ).casefold()
+    return query.casefold() in searchable_text
+
+
+def _filter_catalog(
+    catalog: list[TableMetadata],
+    search_query: str,
+    source_filter: str,
+    database_filter: str,
+    schema_filter: str,
+) -> list[TableMetadata]:
+    return [
+        table_metadata
+        for table_metadata in catalog
+        if _matches_search(table_metadata, search_query)
+        and (source_filter == ALL_SOURCES or _source_display_name(table_metadata.source_type) == source_filter)
+        and (database_filter == ALL_DATABASES or table_metadata.database_name == database_filter)
+        and (schema_filter == ALL_SCHEMAS or table_metadata.schema_name == schema_filter)
+    ]
+
+
+def _selectbox_with_reset(label: str, options: list[str], key: str) -> str:
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = options[0]
+    return st.selectbox(label, options, key=key)
+
+
+def _render_catalog_summary(catalog: list[TableMetadata]) -> None:
+    source_count = len({_source_display_name(table.source_type) for table in catalog})
+    database_count = len({table.database_name for table in catalog})
+    column_count = sum(len(table.columns) for table in catalog)
+
+    render_workspace_status(
+        [
+            ("catalog", "Cataloged Datasets", f"{len(catalog):,}", "Persisted metadata entries"),
+            ("database", "Sources", f"{source_count:,}", "Connected platform types"),
+            ("dashboard", "Databases", f"{database_count:,}", "Cataloged database contexts"),
+            ("search", "Total Columns", f"{column_count:,}", "Stored column definitions"),
+        ]
+    )
+
+
+def _catalog_rows(catalog: list[TableMetadata]) -> list[dict[str, str | int]]:
+    return [
+        {
+            "Source": _source_display_name(table.source_type),
+            "Database": table.database_name,
+            "Schema": table.schema_name,
+            "Table": table.table_name,
+            "Type": table.table_type,
+            "Rows": _format_count(table.row_count),
+            "Columns": len(table.columns),
+        }
+        for table in catalog
+    ]
+
+
+def _column_rows(table_metadata: TableMetadata) -> list[dict[str, str | int]]:
+    return [
+        {
+            "Column": column.column_name,
+            "Source Type": column.source_data_type,
+            "Normalized Type": column.normalized_data_type,
+            "Nullable": "Yes" if column.nullable else "No",
+            "Position": column.ordinal_position,
+            "Null Count": _format_count(column.null_count),
+            "Distinct Count": _format_count(column.distinct_count),
+            "Minimum": _format_optional(column.minimum),
+            "Maximum": _format_optional(column.maximum),
+            "Sample Values": _format_sample_values(column.sample_values),
+        }
+        for column in sorted(table_metadata.columns, key=lambda item: item.ordinal_position)
+    ]
+
+
+def _render_dataset_details(table_metadata: TableMetadata) -> None:
+    st.markdown('<div class="section-kicker">DATASET DETAILS</div>', unsafe_allow_html=True)
+
+    detail_rows = [
+        ("Source", _source_display_name(table_metadata.source_type)),
+        ("Database", table_metadata.database_name),
+        ("Schema", table_metadata.schema_name),
+        ("Table", table_metadata.table_name),
+        ("Table Type", table_metadata.table_type),
+        ("Row Count", _format_count(table_metadata.row_count)),
+        ("Column Count", f"{len(table_metadata.columns):,}"),
+    ]
+
+    columns = st.columns(4)
+    for index, (label, value) in enumerate(detail_rows):
+        with columns[index % len(columns)]:
+            st.markdown(f"**{label}**")
+            st.write(value)
+
+    st.markdown('<div class="section-kicker">COLUMN METADATA</div>', unsafe_allow_html=True)
+    column_rows = _column_rows(table_metadata)
+    if column_rows:
+        st.dataframe(column_rows, use_container_width=True, hide_index=True)
+    else:
+        render_empty_state("No columns found", "This cataloged dataset has no stored column metadata.", "catalog")
 
 
 render_page_header(
     "Data Catalog",
-    "Discover trusted datasets across your connected platforms.",
-    "Search the shared inventory of documented datasets and their business context.",
+    "Browse persisted metadata from successful scans.",
+    "Search and filter cataloged datasets without reconnecting to the source system.",
     icon="catalog",
 )
 
-st.markdown('<div class="toolbar-panel">', unsafe_allow_html=True)
-search_column, source_column, schema_column = st.columns([2, 1, 1])
-with search_column:
-    st.text_input("Search datasets", placeholder="Search datasets, tables or columns", disabled=True)
-with source_column:
-    st.selectbox("Source", ["All sources"], disabled=True)
-with schema_column:
-    st.selectbox("Schema", ["All schemas"], disabled=True)
-st.markdown('</div>', unsafe_allow_html=True)
+catalog, catalog_error = _load_catalog()
+if catalog_error is not None:
+    st.error("Unable to load the metadata catalog.")
+    st.stop()
 
-render_empty_state("Catalog workspace is empty", "Scan metadata to populate the catalog with trusted dataset documentation.", "catalog")
+if not catalog:
+    render_empty_state(
+        "No cataloged datasets yet",
+        "Scan metadata from a connected data source to populate the catalog.",
+        "catalog",
+    )
+    st.page_link(
+        "pages/2_metadata_scan.py",
+        label="Go to Metadata Scan",
+        icon=":material/manage_search:",
+    )
+    st.stop()
+
+_render_catalog_summary(catalog)
+
+st.markdown('<div class="toolbar-panel">', unsafe_allow_html=True)
+search_column, source_column, database_column, schema_column = st.columns([2, 1, 1, 1])
+
+with search_column:
+    search_query = st.text_input(
+        "Search catalog",
+        placeholder="Search by source, database, schema, table or column",
+        key="catalog_search_query",
+    ).strip()
+
+source_options = [ALL_SOURCES] + sorted({_source_display_name(table.source_type) for table in catalog})
+with source_column:
+    selected_source = _selectbox_with_reset("Source", source_options, "catalog_source_filter")
+
+source_scoped_catalog = [
+    table for table in catalog if selected_source == ALL_SOURCES or _source_display_name(table.source_type) == selected_source
+]
+database_options = [ALL_DATABASES] + sorted({table.database_name for table in source_scoped_catalog})
+with database_column:
+    selected_database = _selectbox_with_reset("Database", database_options, "catalog_database_filter")
+
+database_scoped_catalog = [
+    table
+    for table in source_scoped_catalog
+    if selected_database == ALL_DATABASES or table.database_name == selected_database
+]
+schema_options = [ALL_SCHEMAS] + sorted({table.schema_name for table in database_scoped_catalog})
+with schema_column:
+    selected_schema = _selectbox_with_reset("Schema", schema_options, "catalog_schema_filter")
+st.markdown("</div>", unsafe_allow_html=True)
+
+filtered_catalog = _filter_catalog(catalog, search_query, selected_source, selected_database, selected_schema)
+
+st.markdown('<div class="section-kicker">CATALOG RESULTS</div>', unsafe_allow_html=True)
+if not filtered_catalog:
+    render_empty_state("No matching datasets", "Adjust the search text or filters to find cataloged metadata.", "search")
+    st.stop()
+
+st.dataframe(_catalog_rows(filtered_catalog), use_container_width=True, hide_index=True)
+
+selected_dataset_by_identity = {_dataset_identity(table): table for table in filtered_catalog}
+dataset_options = list(selected_dataset_by_identity)
+if st.session_state.get("catalog_selected_dataset") not in dataset_options:
+    st.session_state["catalog_selected_dataset"] = dataset_options[0]
+
+selected_dataset_identity = st.selectbox(
+    "Select dataset",
+    dataset_options,
+    key="catalog_selected_dataset",
+    format_func=lambda identity: _dataset_label(selected_dataset_by_identity[identity]),
+)
+selected_dataset = selected_dataset_by_identity[selected_dataset_identity]
+
+_render_dataset_details(selected_dataset)

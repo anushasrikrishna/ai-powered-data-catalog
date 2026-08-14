@@ -25,8 +25,8 @@ class SnowflakeConnector(BaseConnector):
         password: str,
         warehouse: str,
         database: str,
-        schema: str,
-        role: str,
+        schema: str | None = None,
+        role: str = "",
         engine: Engine | None = None,
     ) -> None:
         self.account = account
@@ -35,22 +35,24 @@ class SnowflakeConnector(BaseConnector):
         self.warehouse = warehouse
         self.database = database
         self.active_database = database
-        self.schema = schema
+        self.schema = schema or ""
         self.role = role
         self.engine = engine or self._create_engine()
 
     def _build_url(self) -> URL:
+        query = {
+            "warehouse": self.warehouse,
+            "role": self.role,
+        }
+        if self.schema:
+            query["schema"] = self.schema
         return URL.create(
             "snowflake",
             username=self.username,
             password=self.password,
             host=self.account,
             database=self.database,
-            query={
-                "schema": self.schema,
-                "warehouse": self.warehouse,
-                "role": self.role,
-            },
+            query=query,
         )
 
     def _create_engine(self) -> Engine:

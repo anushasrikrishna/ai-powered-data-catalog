@@ -10,6 +10,7 @@ from connectors.exceptions import (
     TableNotFoundError,
 )
 from connectors.snowflake_connector import SnowflakeConnector
+from sqlalchemy.engine import URL
 
 
 class TestSnowflakeConnectorUnit(unittest.TestCase):
@@ -39,6 +40,21 @@ class TestSnowflakeConnectorUnit(unittest.TestCase):
         self.assertTrue(hasattr(self.connector, "list_tables"))
         self.assertTrue(hasattr(self.connector, "get_columns"))
         self.assertTrue(hasattr(self.connector, "get_sample_rows"))
+
+    def test_connector_can_initialize_without_schema(self) -> None:
+        connector = SnowflakeConnector(
+            account="account.example",
+            username="user",
+            password="secret",
+            warehouse="COMPUTE_WH",
+            database="CATALOG",
+            role="ANALYST",
+            engine=self.engine,
+        )
+
+        self.assertEqual(connector.schema, "")
+        self.assertIsInstance(connector._build_url(), URL)
+        self.assertNotIn("schema", connector._build_url().query)
 
     def test_test_connection_returns_true(self) -> None:
         connection = MagicMock()
