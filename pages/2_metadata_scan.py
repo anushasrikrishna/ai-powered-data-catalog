@@ -165,7 +165,11 @@ def _render_scan_result(table_metadata: TableMetadata) -> None:
     st.markdown('<div class="section-kicker">COLUMN METADATA</div>', unsafe_allow_html=True)
     column_rows = _column_display_rows(table_metadata)
     if column_rows:
-        render_html_table(column_rows)
+        render_html_table(
+            column_rows,
+            table_id="scan-column-metadata",
+            download_filename="scan_column_metadata.csv",
+        )
     else:
         render_empty_state("No columns found", "The metadata scan returned no column metadata.", "catalog")
 

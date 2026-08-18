@@ -4,9 +4,17 @@ from typing import Any
 
 import streamlit as st
 
+from documentation import MetadataDocumentationGenerator
+from documentation.models import TableDocumentation
 from metadata.models import TableMetadata
 from storage.repository import MetadataRepository
-from ui.components import render_empty_state, render_html_table, render_page_header, render_workspace_status
+from ui.components import (
+    render_count_chips,
+    render_empty_state,
+    render_html_table,
+    render_page_header,
+    render_workspace_status,
+)
 
 
 ALL_SOURCES = "All Sources"
@@ -162,29 +170,101 @@ def _column_rows(table_metadata: TableMetadata) -> list[dict[str, str | int]]:
     ]
 
 
-def _render_dataset_details(table_metadata: TableMetadata) -> None:
-    st.markdown('<div class="section-kicker">DATASET DETAILS</div>', unsafe_allow_html=True)
-
-    detail_rows = [
-        ("Source", _source_display_name(table_metadata.source_type)),
-        ("Database", table_metadata.database_name),
-        ("Schema", table_metadata.schema_name),
-        ("Table", table_metadata.table_name),
-        ("Table Type", table_metadata.table_type),
-        ("Row Count", _format_count(table_metadata.row_count)),
-        ("Column Count", f"{len(table_metadata.columns):,}"),
+def _documentation_column_rows(documentation: TableDocumentation) -> list[dict[str, Any]]:
+    return [
+        {
+            "Column": column.column_name,
+            "Source Type": column.source_data_type,
+            "Normalized Type": column.normalized_data_type,
+            "Possible Category": column.possible_category,
+            "Nullable": "Yes" if column.nullable else "No",
+            "Position": column.ordinal_position,
+            "Null Count": _format_count(column.null_count),
+            "Distinct Count": _format_count(column.distinct_count),
+            "Minimum": _format_optional(column.minimum),
+            "Maximum": _format_optional(column.maximum),
+            "Sample Values": _format_sample_values(column.sample_values),
+        }
+        for column in sorted(documentation.columns, key=lambda item: item.ordinal_position)
     ]
 
-    columns = st.columns(4)
-    for index, (label, value) in enumerate(detail_rows):
-        with columns[index % len(columns)]:
-            st.markdown(f"**{label}**")
-            st.write(value)
+
+def _render_documentation_summary(documentation: TableDocumentation) -> None:
+    summary = documentation.summary
+    render_workspace_status(
+        [
+            ("dashboard", "Rows", _format_count(summary.row_count), "Persisted source row count"),
+            ("catalog", "Columns", f"{summary.column_count:,}", "Documented columns"),
+            ("search", "Nullable", f"{summary.nullable_column_count:,}", "Columns allowing nulls"),
+            ("quality", "Non-Nullable", f"{summary.non_nullable_column_count:,}", "Required columns"),
+        ]
+    )
+
+    type_counts = [
+        ("Number", summary.number_column_count),
+        ("Decimal", summary.decimal_column_count),
+        ("String", summary.string_column_count),
+        ("Date", summary.date_column_count),
+        ("Datetime", summary.datetime_column_count),
+        ("Boolean", summary.boolean_column_count),
+        ("Binary", summary.binary_column_count),
+        ("Other", summary.other_column_count),
+    ]
+    meaningful_counts = [(label, count) for label, count in type_counts if count]
+    render_count_chips("DATA TYPE DISTRIBUTION", meaningful_counts)
+
+    category_order = [
+        "Identifier",
+        "Name",
+        "Contact Information",
+        "Location",
+        "Date/Time",
+        "Financial/Measure",
+        "Quantity/Measure",
+        "Boolean/Flag",
+        "Text/Description",
+        "Other",
+    ]
+    category_counts = {category: 0 for category in category_order}
+    for column in documentation.columns:
+        if column.possible_category in category_counts:
+            category_counts[column.possible_category] += 1
+    render_count_chips(
+        "COLUMN CLASSIFICATIONS",
+        [(category, category_counts[category]) for category in category_order if category_counts[category]],
+        "Categories are inferred deterministically from column names and normalized data types.",
+        kind="category",
+    )
+
+
+def _render_selected_dataset_documentation(table_metadata: TableMetadata) -> None:
+    documentation = None
+    try:
+        documentation = MetadataDocumentationGenerator().generate(table_metadata)
+    except Exception:
+        st.warning("Unable to generate dataset documentation.")
+
+    if documentation is not None:
+        st.markdown('<div class="section-kicker">DOCUMENTATION</div>', unsafe_allow_html=True)
+        st.markdown('<div class="documentation-subsection-title">TECHNICAL SUMMARY</div>', unsafe_allow_html=True)
+        _render_documentation_summary(documentation)
+        column_rows = _documentation_column_rows(documentation)
+    else:
+        column_rows = _column_rows(table_metadata)
 
     st.markdown('<div class="section-kicker">COLUMN METADATA</div>', unsafe_allow_html=True)
-    column_rows = _column_rows(table_metadata)
     if column_rows:
-        render_html_table(column_rows)
+        render_html_table(
+            column_rows,
+            table_id="catalog-column-metadata",
+            download_filename="selected_column_metadata.csv",
+        )
+    elif documentation is not None:
+        render_empty_state(
+            "No column documentation",
+            "No column documentation is available for this dataset.",
+            "catalog",
+        )
     else:
         render_empty_state("No columns found", "This cataloged dataset has no stored column metadata.", "catalog")
 
@@ -254,7 +334,11 @@ if not filtered_catalog:
     render_empty_state("No matching datasets", "Adjust the search text or filters to find cataloged metadata.", "search")
     st.stop()
 
-render_html_table(_catalog_rows(filtered_catalog))
+render_html_table(
+    _catalog_rows(filtered_catalog),
+    table_id="catalog-results",
+    download_filename="catalog_results.csv",
+)
 
 selected_dataset_by_identity = {_dataset_identity(table): table for table in filtered_catalog}
 dataset_options = list(selected_dataset_by_identity)
@@ -269,4 +353,4 @@ selected_dataset_identity = st.selectbox(
 )
 selected_dataset = selected_dataset_by_identity[selected_dataset_identity]
 
-_render_dataset_details(selected_dataset)
+_render_selected_dataset_documentation(selected_dataset)

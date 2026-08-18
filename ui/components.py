@@ -1,7 +1,10 @@
 import streamlit as st
 from contextlib import contextmanager
+import csv
 from html import escape
+import io
 from pathlib import Path
+import re
 from typing import Any
 
 from ui.icons import svg_icon
@@ -113,20 +116,67 @@ def render_empty_state(title: str, description: str, icon: str = "search") -> No
     )
 
 
-def render_html_table(data: Any) -> None:
-    """Render tabular data without Streamlit's Arrow serialization path."""
+def sanitize_table_id(table_id: str) -> str:
+    """Return a stable DOM/session key safe for a rendered table."""
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(table_id)).strip("-")
+    return sanitized or "table"
+
+
+def table_to_csv(data: Any) -> str:
+    """Serialize table input to UTF-8-compatible CSV without HTML markup."""
+    headers, rows = _table_records(data)
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(
+            {
+                header: "" if row.get(key) is None else str(row.get(key))
+                for key, header in zip(row.keys(), headers)
+            }
+        )
+    return output.getvalue()
+
+
+def _table_records(data: Any) -> tuple[list[str], list[dict[Any, Any]]]:
     if hasattr(data, "to_dict") and hasattr(data, "columns"):
         rows = data.to_dict(orient="records")
         column_keys = list(data.columns)
-        headers = [str(column) for column in column_keys]
     else:
         rows = list(data or [])
         column_keys = list(rows[0].keys()) if rows else []
-        headers = [str(header) for header in column_keys]
+    return [str(column) for column in column_keys], rows
+
+
+def render_html_table(
+    data: Any,
+    *,
+    table_id: str = "table",
+    download_filename: str = "table.csv",
+) -> None:
+    """Render tabular data without Streamlit's Arrow serialization path."""
+    headers, rows = _table_records(data)
+    column_keys = list(rows[0].keys()) if rows else []
 
     if not rows or not headers:
         st.markdown('<div class="html-table-empty">No data available.</div>', unsafe_allow_html=True)
         return
+
+    safe_table_id = sanitize_table_id(table_id)
+    table_shell = st.container(key=f"table-shell-{safe_table_id}")
+    download_column = table_shell.columns([1, 0.05], vertical_alignment="center")[1]
+    download_column.download_button(
+        "",
+        data=table_to_csv(data),
+        file_name=download_filename,
+        mime="text/csv",
+        icon=":material/download:",
+        key=f"{safe_table_id}_download_button",
+        help="Download CSV",
+        type="tertiary",
+    )
+    visible_columns = column_keys
+    visible_headers = headers
 
     def format_value(value: Any) -> str:
         return "—" if value is None else escape(str(value))
@@ -145,6 +195,20 @@ def render_html_table(data: Any) -> None:
 
     def badge(value: Any, kind: str) -> str:
         return f'<span class="html-table-badge html-table-badge--{kind}">{format_value(value)}</span>'
+
+    def category_kind(value: Any) -> str:
+        return {
+            "identifier": "identifier",
+            "contact information": "contact",
+            "date/time": "date-time",
+            "financial/measure": "financial",
+            "quantity/measure": "quantity",
+            "boolean/flag": "boolean",
+            "name": "name",
+            "location": "location",
+            "text/description": "text",
+            "other": "other",
+        }.get(str(value or "").casefold(), "other")
 
     def source_cell(value: Any) -> str:
         source_kind = str(value or "").casefold().replace(" ", "-")
@@ -174,6 +238,8 @@ def render_html_table(data: Any) -> None:
             return badge(value, "nullable-yes" if is_nullable else "nullable-no")
         if normalized == "type":
             return badge(value, "table-type")
+        if normalized == "possible category":
+            return badge(value, f"category-{category_kind(value)}")
         if normalized == "source":
             return source_cell(value)
         if normalized in {"column", "name"}:
@@ -193,20 +259,49 @@ def render_html_table(data: Any) -> None:
     table_kind = "catalog" if headers == ["Source", "Database", "Schema", "Table", "Type", "Rows", "Columns"] else "metadata"
     header_html = "".join(
         f"<th class='html-table-cell {cell_class(header)}' scope='col'>{escape(header)}</th>"
-        for header in headers
+        for header in visible_headers
     )
     body_html = "".join(
         "<tr>"
         + "".join(
             f"<td class='html-table-cell {cell_class(header)}'>{formatted_cell(header, row.get(key), row)}</td>"
-            for key, header in zip(column_keys, headers)
+            for key, header in zip(visible_columns, visible_headers)
         )
         + "</tr>"
         for row in rows
     )
-    st.markdown(
-        f'<div class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}"><thead><tr>{header_html}</tr></thead>'
+    if not rows:
+        table_shell.markdown(
+            f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-empty">No matching rows.</div></div>',
+            unsafe_allow_html=True,
+        )
+        return
+    table_shell.markdown(
+        f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}"><thead><tr>{header_html}</tr></thead>'
         f"<tbody>{body_html}</tbody></table></div></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_count_chips(
+    title: str,
+    items: list[tuple[str, int]],
+    description: str | None = None,
+    kind: str = "default",
+) -> None:
+    """Render compact labeled counts for deterministic documentation summaries."""
+    if not items:
+        return
+    description_html = f'<div class="documentation-count-description">{escape(description)}</div>' if description else ""
+    chips = "".join(
+        f'<span class="documentation-count-item documentation-count-item--{escape(kind)}">'
+        f'<span class="documentation-count-label">{escape(label)}</span>'
+        f'<span class="documentation-count-value">{count:,}</span></span>'
+        for label, count in items
+    )
+    st.markdown(
+        f'<div class="documentation-count-breakdown documentation-count-breakdown--{escape(kind)}">'
+        f'<div class="documentation-count-title">{escape(title)}</div>{description_html}{chips}</div>',
         unsafe_allow_html=True,
     )
 
