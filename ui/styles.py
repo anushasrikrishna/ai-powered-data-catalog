@@ -15,6 +15,12 @@ def render_global_styles(colors: dict[str, str]) -> None:
         .stApp {{ background:var(--bg); color:var(--text); }}
         .html-table-wrapper {{ background:var(--surface); border:1px solid var(--border); border-radius:10px; margin:.7rem 0 1.1rem; overflow:hidden; width:100%; }}
         .html-table-scroll {{ overflow-x:auto; width:100%; }}
+        [class*="st-key-table-shell-"] {{ position:relative; }}
+        [class*="st-key-table-shell-"] [data-testid="stHorizontalBlock"] {{ align-items:flex-start; display:flex; justify-content:flex-end; opacity:0; pointer-events:none; position:absolute; right:.45rem; top:.45rem; transition:opacity 120ms ease, visibility 120ms ease; visibility:hidden; width:auto!important; z-index:20; }}
+        [class*="st-key-table-shell-"]:hover [data-testid="stHorizontalBlock"] {{ opacity:1; pointer-events:auto; visibility:visible; }}
+        [class*="st-key-table-shell-"] [data-testid="stDownloadButton"] button {{ background:var(--surface); border:1px solid var(--border); color:var(--icon-secondary); height:30px; min-height:28px; min-width:30px; padding:0 .25rem; width:30px; }}
+        [class*="st-key-table-shell-"] [data-testid="stDownloadButton"] button:hover {{ background:var(--input-hover); color:var(--accent); }}
+        [class*="st-key-table-shell-"] [data-testid="stIconMaterial"] {{ font-size:17px!important; }}
         .html-table {{ border-collapse:collapse; color:var(--text); font-family:inherit; min-width:900px; table-layout:auto; width:100%; }}
         .html-table-cell {{ border-left:1px solid color-mix(in srgb, var(--border) 45%, transparent); font-size:.78rem; padding:.62rem .8rem; vertical-align:top; }}
         .html-table-cell:first-child {{ border-left:0; }}
@@ -44,6 +50,12 @@ def render_global_styles(colors: dict[str, str]) -> None:
         .html-table-badge--nullable-yes {{ background:color-mix(in srgb, #4E9A62 18%, var(--surface)); border-color:color-mix(in srgb, #4E9A62 42%, var(--border)); color:color-mix(in srgb, var(--text) 68%, #4E9A62); }}
         .html-table-badge--nullable-no {{ background:color-mix(in srgb, #D16A5B 18%, var(--surface)); border-color:color-mix(in srgb, #D16A5B 42%, var(--border)); color:color-mix(in srgb, var(--text) 68%, #D16A5B); }}
         .html-table-badge--table-type {{ background:color-mix(in srgb, #4E88A8 18%, var(--surface)); border-color:color-mix(in srgb, #4E88A8 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #4E88A8); }}
+        .html-table-badge--category-identifier, .html-table-badge--category-quantity {{ background:color-mix(in srgb, #4E88A8 18%, var(--surface)); border-color:color-mix(in srgb, #4E88A8 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #4E88A8); }}
+        .html-table-badge--category-contact, .html-table-badge--category-text {{ background:color-mix(in srgb, #3F968A 18%, var(--surface)); border-color:color-mix(in srgb, #3F968A 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #3F968A); }}
+        .html-table-badge--category-date-time {{ background:color-mix(in srgb, #8265A8 18%, var(--surface)); border-color:color-mix(in srgb, #8265A8 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #8265A8); }}
+        .html-table-badge--category-financial, .html-table-badge--category-boolean {{ background:color-mix(in srgb, #B48736 18%, var(--surface)); border-color:color-mix(in srgb, #B48736 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #B48736); }}
+        .html-table-badge--category-name, .html-table-badge--category-location {{ background:color-mix(in srgb, var(--accent) 14%, var(--surface)); border-color:color-mix(in srgb, var(--accent) 38%, var(--border)); color:color-mix(in srgb, var(--text) 70%, var(--accent)); }}
+        .html-table-badge--category-other {{ background:var(--elevated); border-color:var(--border); color:var(--text-secondary); }}
         .html-table-source {{ align-items:center; display:inline-flex; gap:.35rem; white-space:nowrap; }}
         .html-table-source-icon {{ color:var(--accent); font-size:.88rem; line-height:1; }}
         .html-table-source--snowflake .html-table-source-icon {{ color:var(--source-blue); }}
@@ -55,10 +67,18 @@ def render_global_styles(colors: dict[str, str]) -> None:
         .html-table-column-icon--date {{ background:color-mix(in srgb, #8265A8 18%, var(--surface)); color:color-mix(in srgb, var(--text) 72%, #8265A8); }}
         .html-table-column-icon--boolean {{ background:color-mix(in srgb, #B48736 18%, var(--surface)); color:color-mix(in srgb, var(--text) 72%, #B48736); }}
         .html-table-column-icon--other {{ background:var(--elevated); color:var(--text-secondary); }}
-        .html-table--metadata td:nth-child(7) {{ color:var(--table-distinct); font-weight:600; }}
-        .html-table--metadata td:nth-child(8), .html-table--metadata td:nth-child(9) {{ color:var(--table-range); }}
+        .html-table--metadata td:nth-child(8) {{ color:var(--table-distinct); font-weight:600; }}
+        .html-table--metadata td:nth-child(9), .html-table--metadata td:nth-child(10) {{ color:var(--table-range); }}
         .html-table--metadata td:nth-child(11) {{ color:var(--table-sample); }}
         .html-table--catalog td:nth-child(6), .html-table--catalog td:nth-child(7) {{ font-variant-numeric:tabular-nums; font-weight:600; text-align:right; }}
+        .documentation-count-breakdown {{ align-items:center; background:var(--surface-secondary); border:1px solid var(--border); border-radius:10px; display:flex; flex-wrap:wrap; gap:.45rem .65rem; margin:.75rem 0 1rem; padding:.7rem .85rem; }}
+        .documentation-count-title {{ color:var(--accent); flex-basis:100%; font-size:.65rem; font-weight:800; letter-spacing:.12em; margin-bottom:.1rem; }}
+        .documentation-count-description {{ color:var(--text-secondary); flex-basis:100%; font-size:.72rem; margin-bottom:.15rem; }}
+        .documentation-count-item {{ align-items:center; background:var(--surface); border:1px solid var(--border); border-radius:6px; display:inline-flex; gap:.4rem; padding:.3rem .5rem; white-space:nowrap; }}
+        .documentation-count-item--category {{ border-color:color-mix(in srgb, var(--accent) 32%, var(--border)); }}
+        .documentation-count-label {{ color:var(--text-secondary); font-size:.72rem; }}
+        .documentation-count-value {{ color:var(--text); font-size:.75rem; font-variant-numeric:tabular-nums; font-weight:750; }}
+        .documentation-subsection-title {{ color:var(--text); font-size:.86rem; font-weight:750; letter-spacing:.02em; margin-top:1rem; }}
         .html-table-empty {{ background:var(--surface); border:1px solid var(--border); border-radius:8px; color:var(--muted); margin:.65rem 0 1rem; padding:1rem; text-align:center; }}
         [data-testid="stHeader"] {{ background:transparent; }}
         [data-testid="stToolbar"] {{ visibility:hidden; height:0; }}

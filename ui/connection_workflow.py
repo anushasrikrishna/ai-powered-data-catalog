@@ -495,8 +495,16 @@ def render_table_preview(selection: ConnectionWorkflowSelection) -> None:
 
     st.markdown('<div class="section-kicker">TABLE OVERVIEW</div>', unsafe_allow_html=True)
     st.subheader(st.session_state[PREVIEW_TABLE_KEY])
-    render_html_table(st.session_state[PREVIEW_COLUMNS_KEY])
+    render_html_table(
+        st.session_state[PREVIEW_COLUMNS_KEY],
+        table_id="preview-column-overview",
+        download_filename="preview_column_overview.csv",
+    )
     st.markdown('<div class="section-kicker">SAMPLE DATA</div>', unsafe_allow_html=True)
     st.caption("Showing up to 5 rows.")
     if PREVIEW_ROWS_KEY in st.session_state:
-        render_html_table(st.session_state[PREVIEW_ROWS_KEY])
+        render_html_table(
+            st.session_state[PREVIEW_ROWS_KEY],
+            table_id="preview-sample-data",
+            download_filename="preview_sample_data.csv",
+        )
