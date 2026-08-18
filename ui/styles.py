@@ -2,11 +2,64 @@ import streamlit as st
 
 
 def render_global_styles(colors: dict[str, str]) -> None:
+    dark_theme = colors["background"] == "#192B37"
+    table_distinct = "#7DD3FC" if dark_theme else "#315C7A"
+    table_range = "#99F6E4" if dark_theme else "#27675F"
+    table_sample = "#D1D5D7" if dark_theme else "#27675F"
+    source_blue = "#9BD8F5" if dark_theme else "#4E88A8"
+    source_postgres = "#A9C7FF" if dark_theme else "#4E73A8"
     st.markdown(
         f"""
         <style>
-        :root {{ --bg:{colors['background']}; --surface:{colors['surface']}; --surface-secondary:{colors['secondary']}; --surface-elevated:{colors['elevated']}; --elevated:{colors['elevated']}; --text:{colors['text']}; --text-secondary:{colors['secondary_text']}; --muted:{colors['muted']}; --border:{colors['border']}; --hover:{colors['hover']}; --accent:{colors['accent']}; --icon-primary:{colors['icon_primary']}; --icon-secondary:{colors['icon_secondary']}; --icon-accent:{colors['icon_accent']}; --button-secondary-text:{colors['button_secondary_text']}; --input-bg:{colors['input_bg']}; --input-hover:{colors['input_hover']}; --input-border:{colors['input_border']}; --input-text:{colors['input_text']}; --input-placeholder:{colors['input_placeholder']}; --input-focus:{colors['input_focus']}; --disabled-bg:{colors['disabled_bg']}; --disabled-text:{colors['disabled_text']}; --spinner-active:{colors['spinner_active']}; --spinner-track:{colors['spinner_track']}; }}
+        :root {{ --bg:{colors['background']}; --surface:{colors['surface']}; --surface-secondary:{colors['secondary']}; --surface-elevated:{colors['elevated']}; --elevated:{colors['elevated']}; --text:{colors['text']}; --text-secondary:{colors['secondary_text']}; --muted:{colors['muted']}; --border:{colors['border']}; --hover:{colors['hover']}; --accent:{colors['accent']}; --icon-primary:{colors['icon_primary']}; --icon-secondary:{colors['icon_secondary']}; --icon-accent:{colors['icon_accent']}; --button-secondary-text:{colors['button_secondary_text']}; --input-bg:{colors['input_bg']}; --input-hover:{colors['input_hover']}; --input-border:{colors['input_border']}; --input-text:{colors['input_text']}; --input-placeholder:{colors['input_placeholder']}; --input-focus:{colors['input_focus']}; --disabled-bg:{colors['disabled_bg']}; --disabled-text:{colors['disabled_text']}; --spinner-active:{colors['spinner_active']}; --spinner-track:{colors['spinner_track']}; --table-distinct:{table_distinct}; --table-range:{table_range}; --table-sample:{table_sample}; --source-blue:{source_blue}; --source-postgres:{source_postgres}; }}
         .stApp {{ background:var(--bg); color:var(--text); }}
+        .html-table-wrapper {{ background:var(--surface); border:1px solid var(--border); border-radius:10px; margin:.7rem 0 1.1rem; overflow:hidden; width:100%; }}
+        .html-table-scroll {{ overflow-x:auto; width:100%; }}
+        .html-table {{ border-collapse:collapse; color:var(--text); font-family:inherit; min-width:900px; table-layout:auto; width:100%; }}
+        .html-table-cell {{ border-left:1px solid color-mix(in srgb, var(--border) 45%, transparent); font-size:.78rem; padding:.62rem .8rem; vertical-align:top; }}
+        .html-table-cell:first-child {{ border-left:0; }}
+        .html-table th {{ background:var(--elevated); border-bottom:1px solid var(--border); color:var(--text); font-size:.74rem; font-weight:750; letter-spacing:.01em; padding:.68rem .8rem; text-align:left; white-space:nowrap; }}
+        .html-table td {{ border-top:1px solid color-mix(in srgb, var(--border) 65%, transparent); color:var(--text); line-height:1.45; overflow-wrap:normal; word-break:normal; }}
+        .html-table tbody tr:nth-child(even) {{ background:color-mix(in srgb, var(--elevated) 32%, var(--surface)); }}
+        .html-table tbody tr:hover {{ background:var(--hover); }}
+        .html-table-cell--identifier {{ min-width:7.5rem; white-space:nowrap; }}
+        .html-table-cell--numeric {{ font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; width:1%; }}
+        .html-table-cell--wide {{ max-width:28rem; min-width:12rem; white-space:normal; }}
+        .html-table--catalog th:nth-child(1), .html-table--catalog td:nth-child(1) {{ width:14%; }}
+        .html-table--catalog th:nth-child(2), .html-table--catalog td:nth-child(2) {{ width:20%; }}
+        .html-table--catalog th:nth-child(3), .html-table--catalog td:nth-child(3) {{ width:11%; }}
+        .html-table--catalog th:nth-child(4), .html-table--catalog td:nth-child(4) {{ width:22%; }}
+        .html-table--catalog th:nth-child(5), .html-table--catalog td:nth-child(5) {{ width:12%; }}
+        .html-table--metadata th:nth-child(1), .html-table--metadata td:nth-child(1) {{ width:15%; }}
+        .html-table--metadata th:nth-child(2), .html-table--metadata td:nth-child(2) {{ width:11%; }}
+        .html-table--metadata th:nth-child(3), .html-table--metadata td:nth-child(3) {{ width:12%; }}
+        .html-table--metadata th:nth-child(4), .html-table--metadata td:nth-child(4) {{ width:8%; }}
+        .html-table--metadata th:nth-child(5), .html-table--metadata td:nth-child(5) {{ width:7%; }}
+        .html-table-badge {{ border:1px solid transparent; border-radius:5px; display:inline-block; font-size:.69rem; font-weight:650; letter-spacing:.01em; line-height:1.35; padding:2px 7px; white-space:nowrap; }}
+        .html-table-badge--datatype-number {{ background:color-mix(in srgb, #4E88A8 18%, var(--surface)); border-color:color-mix(in srgb, #4E88A8 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #4E88A8); }}
+        .html-table-badge--datatype-text {{ background:color-mix(in srgb, #3F968A 18%, var(--surface)); border-color:color-mix(in srgb, #3F968A 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #3F968A); }}
+        .html-table-badge--datatype-date {{ background:color-mix(in srgb, #8265A8 18%, var(--surface)); border-color:color-mix(in srgb, #8265A8 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #8265A8); }}
+        .html-table-badge--datatype-boolean {{ background:color-mix(in srgb, #B48736 18%, var(--surface)); border-color:color-mix(in srgb, #B48736 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #B48736); }}
+        .html-table-badge--datatype-other {{ background:var(--elevated); border-color:var(--border); color:var(--text-secondary); }}
+        .html-table-badge--nullable-yes {{ background:color-mix(in srgb, #4E9A62 18%, var(--surface)); border-color:color-mix(in srgb, #4E9A62 42%, var(--border)); color:color-mix(in srgb, var(--text) 68%, #4E9A62); }}
+        .html-table-badge--nullable-no {{ background:color-mix(in srgb, #D16A5B 18%, var(--surface)); border-color:color-mix(in srgb, #D16A5B 42%, var(--border)); color:color-mix(in srgb, var(--text) 68%, #D16A5B); }}
+        .html-table-badge--table-type {{ background:color-mix(in srgb, #4E88A8 18%, var(--surface)); border-color:color-mix(in srgb, #4E88A8 42%, var(--border)); color:color-mix(in srgb, var(--text) 72%, #4E88A8); }}
+        .html-table-source {{ align-items:center; display:inline-flex; gap:.35rem; white-space:nowrap; }}
+        .html-table-source-icon {{ color:var(--accent); font-size:.88rem; line-height:1; }}
+        .html-table-source--snowflake .html-table-source-icon {{ color:var(--source-blue); }}
+        .html-table-source--postgresql .html-table-source-icon {{ color:var(--source-postgres); }}
+        .html-table-column-name {{ align-items:center; display:inline-flex; gap:.42rem; white-space:nowrap; }}
+        .html-table-column-icon {{ align-items:center; border-radius:4px; display:inline-flex; font-size:.67rem; font-weight:750; height:1.15rem; justify-content:center; width:1.15rem; }}
+        .html-table-column-icon--number {{ background:color-mix(in srgb, #4E88A8 18%, var(--surface)); color:color-mix(in srgb, var(--text) 72%, #4E88A8); }}
+        .html-table-column-icon--text {{ background:color-mix(in srgb, #3F968A 18%, var(--surface)); color:color-mix(in srgb, var(--text) 72%, #3F968A); }}
+        .html-table-column-icon--date {{ background:color-mix(in srgb, #8265A8 18%, var(--surface)); color:color-mix(in srgb, var(--text) 72%, #8265A8); }}
+        .html-table-column-icon--boolean {{ background:color-mix(in srgb, #B48736 18%, var(--surface)); color:color-mix(in srgb, var(--text) 72%, #B48736); }}
+        .html-table-column-icon--other {{ background:var(--elevated); color:var(--text-secondary); }}
+        .html-table--metadata td:nth-child(7) {{ color:var(--table-distinct); font-weight:600; }}
+        .html-table--metadata td:nth-child(8), .html-table--metadata td:nth-child(9) {{ color:var(--table-range); }}
+        .html-table--metadata td:nth-child(11) {{ color:var(--table-sample); }}
+        .html-table--catalog td:nth-child(6), .html-table--catalog td:nth-child(7) {{ font-variant-numeric:tabular-nums; font-weight:600; text-align:right; }}
+        .html-table-empty {{ background:var(--surface); border:1px solid var(--border); border-radius:8px; color:var(--muted); margin:.65rem 0 1rem; padding:1rem; text-align:center; }}
         [data-testid="stHeader"] {{ background:transparent; }}
         [data-testid="stToolbar"] {{ visibility:hidden; height:0; }}
         [data-testid="stMainBlockContainer"] {{ max-width:1320px; padding-top:1.25rem; padding-bottom:3rem; }}

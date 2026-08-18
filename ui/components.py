@@ -2,6 +2,7 @@ import streamlit as st
 from contextlib import contextmanager
 from html import escape
 from pathlib import Path
+from typing import Any
 
 from ui.icons import svg_icon
 
@@ -108,6 +109,104 @@ def render_source_card(name: str, description: str) -> None:
 def render_empty_state(title: str, description: str, icon: str = "search") -> None:
     st.markdown(
         f'<div class="empty-state"><div class="empty-icon">{svg_icon(icon, 28)}</div><div class="empty-title">{title}</div><div class="empty-description">{description}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_html_table(data: Any) -> None:
+    """Render tabular data without Streamlit's Arrow serialization path."""
+    if hasattr(data, "to_dict") and hasattr(data, "columns"):
+        rows = data.to_dict(orient="records")
+        column_keys = list(data.columns)
+        headers = [str(column) for column in column_keys]
+    else:
+        rows = list(data or [])
+        column_keys = list(rows[0].keys()) if rows else []
+        headers = [str(header) for header in column_keys]
+
+    if not rows or not headers:
+        st.markdown('<div class="html-table-empty">No data available.</div>', unsafe_allow_html=True)
+        return
+
+    def format_value(value: Any) -> str:
+        return "—" if value is None else escape(str(value))
+
+    def datatype_kind(value: Any) -> str:
+        normalized = str(value or "").casefold()
+        if any(token in normalized for token in ("bool",)):
+            return "boolean"
+        if any(token in normalized for token in ("date", "time", "year")):
+            return "date"
+        if any(token in normalized for token in ("char", "text", "string", "clob", "varchar")):
+            return "text"
+        if any(token in normalized for token in ("int", "number", "numeric", "decimal", "float", "double", "real")):
+            return "number"
+        return "other"
+
+    def badge(value: Any, kind: str) -> str:
+        return f'<span class="html-table-badge html-table-badge--{kind}">{format_value(value)}</span>'
+
+    def source_cell(value: Any) -> str:
+        source_kind = str(value or "").casefold().replace(" ", "-")
+        icon = {"snowflake": "❄", "sql-server": "▦", "postgresql": "▦"}.get(source_kind, "•")
+        return (
+            f'<span class="html-table-source html-table-source--{escape(source_kind)}">'
+            f'<span class="html-table-source-icon" aria-hidden="true">{icon}</span>'
+            f"{format_value(value)}</span>"
+        )
+
+    def column_cell(value: Any, row: dict[Any, Any]) -> str:
+        kind = datatype_kind(
+            row.get("Normalized Type", row.get("Source Type", row.get("data_type", row.get("data type"))))
+        )
+        icon = {"number": "#", "text": "A", "date": "◷", "boolean": "✓", "other": "•"}[kind]
+        return (
+            f'<span class="html-table-column-name"><span class="html-table-column-icon html-table-column-icon--{kind}" '
+            f'aria-hidden="true">{icon}</span>{format_value(value)}</span>'
+        )
+
+    def formatted_cell(header: str, value: Any, row: dict[Any, Any]) -> str:
+        normalized = header.casefold()
+        if normalized in {"source type", "normalized type", "data_type", "data type"}:
+            return badge(value, f"datatype-{datatype_kind(value)}")
+        if normalized == "nullable":
+            is_nullable = value is True or str(value).casefold() in {"yes", "true"}
+            return badge(value, "nullable-yes" if is_nullable else "nullable-no")
+        if normalized == "type":
+            return badge(value, "table-type")
+        if normalized == "source":
+            return source_cell(value)
+        if normalized in {"column", "name"}:
+            return column_cell(value, row)
+        return format_value(value)
+
+    def cell_class(header: str) -> str:
+        normalized = header.casefold()
+        if normalized in {"position", "ordinal_position", "ordinal position", "null count", "distinct count", "rows", "columns"}:
+            return "html-table-cell--numeric"
+        if normalized in {"column", "name", "database", "schema", "table", "source", "type", "source type", "normalized type", "data_type", "data type"}:
+            return "html-table-cell--identifier"
+        if normalized in {"minimum", "maximum", "sample values"}:
+            return "html-table-cell--wide"
+        return ""
+
+    table_kind = "catalog" if headers == ["Source", "Database", "Schema", "Table", "Type", "Rows", "Columns"] else "metadata"
+    header_html = "".join(
+        f"<th class='html-table-cell {cell_class(header)}' scope='col'>{escape(header)}</th>"
+        for header in headers
+    )
+    body_html = "".join(
+        "<tr>"
+        + "".join(
+            f"<td class='html-table-cell {cell_class(header)}'>{formatted_cell(header, row.get(key), row)}</td>"
+            for key, header in zip(column_keys, headers)
+        )
+        + "</tr>"
+        for row in rows
+    )
+    st.markdown(
+        f'<div class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}"><thead><tr>{header_html}</tr></thead>'
+        f"<tbody>{body_html}</tbody></table></div></div>",
         unsafe_allow_html=True,
     )
 

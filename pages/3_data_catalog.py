@@ -6,7 +6,7 @@ import streamlit as st
 
 from metadata.models import TableMetadata
 from storage.repository import MetadataRepository
-from ui.components import render_empty_state, render_page_header, render_workspace_status
+from ui.components import render_empty_state, render_html_table, render_page_header, render_workspace_status
 
 
 ALL_SOURCES = "All Sources"
@@ -184,7 +184,7 @@ def _render_dataset_details(table_metadata: TableMetadata) -> None:
     st.markdown('<div class="section-kicker">COLUMN METADATA</div>', unsafe_allow_html=True)
     column_rows = _column_rows(table_metadata)
     if column_rows:
-        st.dataframe(column_rows, use_container_width=True, hide_index=True)
+        render_html_table(column_rows)
     else:
         render_empty_state("No columns found", "This cataloged dataset has no stored column metadata.", "catalog")
 
@@ -254,7 +254,7 @@ if not filtered_catalog:
     render_empty_state("No matching datasets", "Adjust the search text or filters to find cataloged metadata.", "search")
     st.stop()
 
-st.dataframe(_catalog_rows(filtered_catalog), use_container_width=True, hide_index=True)
+render_html_table(_catalog_rows(filtered_catalog))
 
 selected_dataset_by_identity = {_dataset_identity(table): table for table in filtered_catalog}
 dataset_options = list(selected_dataset_by_identity)
