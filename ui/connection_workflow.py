@@ -10,7 +10,7 @@ from connectors.exceptions import ConnectorError
 from connectors.postgres_connector import PostgresConnector
 from connectors.snowflake_connector import SnowflakeConnector
 from connectors.sqlserver_connector import SQLServerConnector
-from ui.components import loading_indicator, render_empty_state
+from ui.components import loading_indicator, render_empty_state, render_html_table
 
 
 SOURCE_OPTIONS = ("SQL Server", "PostgreSQL", "Snowflake")
@@ -495,16 +495,8 @@ def render_table_preview(selection: ConnectionWorkflowSelection) -> None:
 
     st.markdown('<div class="section-kicker">TABLE OVERVIEW</div>', unsafe_allow_html=True)
     st.subheader(st.session_state[PREVIEW_TABLE_KEY])
-    st.dataframe(
-        st.session_state[PREVIEW_COLUMNS_KEY],
-        use_container_width=True,
-        hide_index=True,
-    )
+    render_html_table(st.session_state[PREVIEW_COLUMNS_KEY])
     st.markdown('<div class="section-kicker">SAMPLE DATA</div>', unsafe_allow_html=True)
     st.caption("Showing up to 5 rows.")
     if PREVIEW_ROWS_KEY in st.session_state:
-        st.dataframe(
-            st.session_state[PREVIEW_ROWS_KEY],
-            use_container_width=True,
-            hide_index=True,
-        )
+        render_html_table(st.session_state[PREVIEW_ROWS_KEY])

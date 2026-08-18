@@ -9,7 +9,7 @@ from metadata.exceptions import MetadataError
 from metadata.extractor import MetadataExtractor
 from metadata.models import TableMetadata
 from storage.repository import MetadataRepository
-from ui.components import loading_indicator, render_empty_state, render_get_started_workflow, render_page_header
+from ui.components import loading_indicator, render_empty_state, render_get_started_workflow, render_html_table, render_page_header
 from ui.connection_workflow import (
     ConnectionWorkflowSelection,
     clear_preview,
@@ -165,7 +165,7 @@ def _render_scan_result(table_metadata: TableMetadata) -> None:
     st.markdown('<div class="section-kicker">COLUMN METADATA</div>', unsafe_allow_html=True)
     column_rows = _column_display_rows(table_metadata)
     if column_rows:
-        st.dataframe(column_rows, use_container_width=True, hide_index=True)
+        render_html_table(column_rows)
     else:
         render_empty_state("No columns found", "The metadata scan returned no column metadata.", "catalog")
 
