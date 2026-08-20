@@ -8,6 +8,7 @@ from sqlalchemy.engine import URL
 
 from connectors.exceptions import ConnectionFailedError, SchemaNotFoundError, TableNotFoundError
 from connectors.postgres_connector import PostgresConnector
+from tests.integration_config import env_flag, env_required, env_value
 
 
 class TestPostgresConnectorUnit(unittest.TestCase):
@@ -141,35 +142,32 @@ class TestPostgresConnectorUnit(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.getenv("RUN_POSTGRES_INTEGRATION_TESTS") == "1",
+    env_flag("RUN_POSTGRES_INTEGRATION_TESTS", "RUN_POSTGRES_INTEGRATION"),
     "PostgreSQL integration tests are disabled. Set RUN_POSTGRES_INTEGRATION_TESTS=1.",
 )
 class TestPostgresConnectorIntegration(unittest.TestCase):
-    def test_connection_smoke(self) -> None:
-        connector = PostgresConnector(
-            host=os.environ["POSTGRES_HOST"],
-            port=int(os.getenv("POSTGRES_PORT", "5432")),
-            database=os.environ["POSTGRES_DATABASE"],
-            username=os.environ["POSTGRES_USERNAME"],
-            password=os.environ["POSTGRES_PASSWORD"],
+    def _connector(self) -> PostgresConnector:
+        return PostgresConnector(
+            host=env_required("POSTGRES_HOST"),
+            port=int(env_value("POSTGRES_PORT", default="5432") or "5432"),
+            database=env_required("POSTGRES_DATABASE"),
+            username=env_required("POSTGRES_USERNAME"),
+            password=env_required("POSTGRES_PASSWORD"),
         )
+
+    def test_connection_smoke(self) -> None:
+        connector = self._connector()
         self.assertTrue(connector.test_connection())
 
     def test_metadata_smoke(self) -> None:
-        schema_name = os.getenv("POSTGRES_TEST_SCHEMA")
-        table_name = os.getenv("POSTGRES_TEST_TABLE")
+        schema_name = env_value("POSTGRES_TEST_SCHEMA", "POSTGRES_SCHEMA")
+        table_name = env_value("POSTGRES_TEST_TABLE", "POSTGRES_TABLE")
         if not schema_name or not table_name:
             self.skipTest(
                 "Set POSTGRES_TEST_SCHEMA and POSTGRES_TEST_TABLE to run metadata smoke checks."
             )
 
-        connector = PostgresConnector(
-            host=os.environ["POSTGRES_HOST"],
-            port=int(os.getenv("POSTGRES_PORT", "5432")),
-            database=os.environ["POSTGRES_DATABASE"],
-            username=os.environ["POSTGRES_USERNAME"],
-            password=os.environ["POSTGRES_PASSWORD"],
-        )
+        connector = self._connector()
 
         databases = connector.list_databases()
         schemas = connector.list_schemas()

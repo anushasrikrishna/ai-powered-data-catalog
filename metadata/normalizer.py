@@ -120,6 +120,7 @@ class MetadataNormalizer:
 
     def _canonicalize(self, source_data_type: str) -> tuple[str, str | None]:
         cleaned = re.sub(r"\s+", " ", source_data_type.strip().upper())
+        cleaned = re.sub(r"\s+COLLATE\b.*$", "", cleaned).strip()
         cleaned = cleaned.replace("`", "").replace('"', "")
         match = re.match(r"^(?P<base>[^()]+?)(?:\((?P<params>.*)\))?$", cleaned)
         if not match:

@@ -60,6 +60,19 @@ class TestMetadataNormalizer(unittest.TestCase):
         self.assertEqual(self.normalizer.normalize_data_type("  integer  "), "NUMBER")
         self.assertEqual(self.normalizer.normalize_data_type("  decimal( 10 , 0 )  "), "DECIMAL")
 
+    def test_sqlserver_collate_suffix_is_ignored(self) -> None:
+        cases = {
+            'VARCHAR(100) COLLATE "SQL_Latin1_General_CP1_CI_AS"': "STRING",
+            'VARCHAR(150) COLLATE "Different_Collation"': "STRING",
+            'NVARCHAR(100) COLLATE "SQL_Latin1_General_CP1_CI_AS"': "STRING",
+            'CHAR(20) COLLATE "SQL_Latin1_General_CP1_CI_AS"': "STRING",
+            'NCHAR(20) COLLATE "SQL_Latin1_General_CP1_CI_AS"': "STRING",
+        }
+
+        for source_type, expected in cases.items():
+            with self.subTest(source_type=source_type):
+                self.assertEqual(self.normalizer.normalize_data_type(source_type), expected)
+
     def test_normalize_column_and_table_metadata(self) -> None:
         table_metadata = TableMetadata(
             source_type="postgresql",
