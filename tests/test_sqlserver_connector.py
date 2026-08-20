@@ -8,6 +8,7 @@ from sqlalchemy.engine import URL
 
 from connectors.exceptions import ConnectionFailedError, SchemaNotFoundError, TableNotFoundError
 from connectors.sqlserver_connector import SQLServerConnector
+from tests.integration_config import env_flag, env_required, env_value, windows_auth_enabled
 
 
 class TestSQLServerConnectorUnit(unittest.TestCase):
@@ -240,37 +241,37 @@ class TestSQLServerConnectorUnit(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.getenv("RUN_SQLSERVER_INTEGRATION_TESTS") == "1",
+    env_flag("RUN_SQLSERVER_INTEGRATION_TESTS", "RUN_SQLSERVER_INTEGRATION"),
     "SQL Server integration tests are disabled. Set RUN_SQLSERVER_INTEGRATION_TESTS=1.",
 )
 class TestSQLServerConnectorIntegration(unittest.TestCase):
-    def test_connection_smoke(self) -> None:
-        connector = SQLServerConnector(
-            host=os.environ["SQLSERVER_SERVER"],
-            port=int(os.getenv("SQLSERVER_PORT", "1433")),
-            database=os.environ["SQLSERVER_DATABASE"],
-            username=os.environ["SQLSERVER_USERNAME"],
-            password=os.environ["SQLSERVER_PASSWORD"],
-            driver=os.getenv("SQLSERVER_DRIVER", "ODBC Driver 18 for SQL Server"),
+    def _connector(self) -> SQLServerConnector:
+        use_windows_auth = windows_auth_enabled()
+        return SQLServerConnector(
+            host=env_required("SQLSERVER_SERVER"),
+            port=int(env_value("SQLSERVER_PORT", default="1433") or "1433"),
+            database=env_required("SQLSERVER_DATABASE"),
+            username=None if use_windows_auth else env_required("SQLSERVER_USERNAME"),
+            password=None if use_windows_auth else env_required("SQLSERVER_PASSWORD"),
+            driver=env_value("SQLSERVER_DRIVER", default="ODBC Driver 18 for SQL Server") or "ODBC Driver 18 for SQL Server",
+            encrypt=env_value("SQLSERVER_ENCRYPT", default="yes") or "yes",
+            trust_server_certificate=env_value("SQLSERVER_TRUST_SERVER_CERTIFICATE", default="yes") or "yes",
+            windows_auth=use_windows_auth,
         )
+
+    def test_connection_smoke(self) -> None:
+        connector = self._connector()
         self.assertTrue(connector.test_connection())
 
     def test_metadata_smoke(self) -> None:
-        schema_name = os.getenv("SQLSERVER_TEST_SCHEMA")
-        table_name = os.getenv("SQLSERVER_TEST_TABLE")
+        schema_name = env_value("SQLSERVER_TEST_SCHEMA", "SQLSERVER_SCHEMA")
+        table_name = env_value("SQLSERVER_TEST_TABLE", "SQLSERVER_TABLE")
         if not schema_name or not table_name:
             self.skipTest(
                 "Set SQLSERVER_TEST_SCHEMA and SQLSERVER_TEST_TABLE to run metadata smoke checks."
             )
 
-        connector = SQLServerConnector(
-            host=os.environ["SQLSERVER_SERVER"],
-            port=int(os.getenv("SQLSERVER_PORT", "1433")),
-            database=os.environ["SQLSERVER_DATABASE"],
-            username=os.environ["SQLSERVER_USERNAME"],
-            password=os.environ["SQLSERVER_PASSWORD"],
-            driver=os.getenv("SQLSERVER_DRIVER", "ODBC Driver 18 for SQL Server"),
-        )
+        connector = self._connector()
 
         databases = connector.list_databases()
         schemas = connector.list_schemas()

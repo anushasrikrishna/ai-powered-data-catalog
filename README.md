@@ -57,3 +57,7 @@ The deterministic documentation backend consumes Phase 3 `TableMetadata` objects
 ## Phase 5 catalog search backend (Person 1)
 
 The catalog backend searches Phase 4 documentation in memory using deterministic tokenization, explainable weighted ranking, stable dataset identity, optional descriptions/tags, and source/database/schema/quality filters. It does not reconnect to source databases, calculate quality scores, or require AI.
+
+## Phase 6 quality backend (Person 1)
+
+The deterministic quality backend executes validated `not_null`, `duplicate`, `unique`, `accepted_values`, `numeric_range`, `string_length`, and `freshness` rules through SQL Server and PostgreSQL dialects. It returns factual rule results and an aggregate quality score without modifying data or requiring AI. Snowflake quality SQL remains a Person 2 responsibility.
