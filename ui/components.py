@@ -5,7 +5,7 @@ from html import escape
 import io
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 
 from ui.icons import svg_icon
 
@@ -85,14 +85,25 @@ def render_metric_card(value: str, label: str, detail: str) -> None:
     )
 
 
-def render_workspace_status(cards: list[tuple[str, str, str, str]]) -> None:
+def render_workspace_status(
+    cards: list[tuple[str, str, str, str]],
+    compact: bool = False,
+    show_detail: bool = True,
+) -> None:
     columns = st.columns(len(cards))
+    card_classes = ["status-card"]
+    if compact:
+        card_classes.append("status-card--compact")
+    if not show_detail:
+        card_classes.append("status-card--no-detail")
+    card_class = " ".join(card_classes)
     for column, (icon, label, value, detail) in zip(columns, cards):
         with column:
+            detail_html = f'<div class="status-detail">{detail}</div>'
             st.markdown(
-                f'<div class="status-card"><div class="status-icon">{svg_icon(icon, 18)}</div>'
-                f'<div class="status-label">{label}</div><div class="status-value">{value}</div>'
-                f'<div class="status-detail">{detail}</div></div>',
+                f'<div class="{card_class}"><div class="status-heading"><div class="status-icon">{svg_icon(icon, 18)}</div>'
+                f'<div class="status-label">{label}</div></div><div class="status-value">{value}</div>'
+                f'{detail_html if show_detail else ""}</div>',
                 unsafe_allow_html=True,
             )
 
@@ -153,6 +164,10 @@ def render_html_table(
     *,
     table_id: str = "table",
     download_filename: str = "table.csv",
+    download: bool = True,
+    column_widths: list[float] | None = None,
+    cell_renderers: dict[str, Callable[[Any, dict[Any, Any]], str]] | None = None,
+    action: dict[str, Any] | None = None,
 ) -> None:
     """Render tabular data without Streamlit's Arrow serialization path."""
     headers, rows = _table_records(data)
@@ -163,18 +178,21 @@ def render_html_table(
         return
 
     safe_table_id = sanitize_table_id(table_id)
-    table_shell = st.container(key=f"table-shell-{safe_table_id}")
-    download_column = table_shell.columns([1, 0.05], vertical_alignment="center")[1]
-    download_column.download_button(
-        "",
-        data=table_to_csv(data),
-        file_name=download_filename,
-        mime="text/csv",
-        icon=":material/download:",
-        key=f"{safe_table_id}_download_button",
-        help="Download CSV",
-        type="tertiary",
-    )
+    table_shell = None
+    if action is None:
+        table_shell = st.container(key=f"table-shell-{safe_table_id}")
+        if download:
+            download_column = table_shell.columns([1, 0.05], vertical_alignment="center")[1]
+            download_column.download_button(
+                "",
+                data=table_to_csv(data),
+                file_name=download_filename,
+                mime="text/csv",
+                icon=":material/download:",
+                key=f"{safe_table_id}_download_button",
+                help="Download CSV",
+                type="tertiary",
+            )
     visible_columns = column_keys
     visible_headers = headers
 
@@ -230,6 +248,8 @@ def render_html_table(
         )
 
     def formatted_cell(header: str, value: Any, row: dict[Any, Any]) -> str:
+        if cell_renderers and header in cell_renderers:
+            return cell_renderers[header](value, row)
         normalized = header.casefold()
         if normalized in {"source type", "normalized type", "data_type", "data type"}:
             return badge(value, f"datatype-{datatype_kind(value)}")
@@ -256,6 +276,53 @@ def render_html_table(
             return "html-table-cell--wide"
         return ""
 
+    if action:
+        action_header = str(action["header"])
+        interactive_columns = list(column_widths or [1.0] * len(visible_headers))
+        if len(interactive_columns) != len(visible_headers):
+            raise ValueError("column_widths must match the table column count")
+        with st.container(key=f"html-table-interactive-{safe_table_id}"):
+            header_columns = st.columns(interactive_columns, gap="small", vertical_alignment="center")
+            for column, header in zip(header_columns, visible_headers):
+                with column:
+                    st.markdown(f'<div class="html-table-interactive-header">{escape(header)}</div>', unsafe_allow_html=True)
+            for index, row in enumerate(rows):
+                with st.container(key=f"html-table-interactive-row-{safe_table_id}-{index}"):
+                    row_columns = st.columns(interactive_columns, gap="small", vertical_alignment="center")
+                    for column, key, header in zip(row_columns, visible_columns, visible_headers):
+                        with column:
+                            if header == action_header:
+                                continue
+                            content = formatted_cell(header, row.get(key), row)
+                            special_class = " html-table-interactive-cell--special" if header in {"Rule", "Status"} else ""
+                            st.markdown(f'<div class="html-table-interactive-cell{special_class}">{content}</div>', unsafe_allow_html=True)
+                    with row_columns[-1]:
+                        actions = action.get("actions") or [action]
+                        actions = [
+                            action_item
+                            for action_item in actions
+                            if action_item.get("visible_if", lambda _row: True)(row)
+                        ]
+                        action_columns = st.columns(len(actions), gap="small") if len(actions) > 1 else [row_columns[-1]]
+                        for action_column, action_item in zip(action_columns, actions):
+                            with action_column:
+                                action_button_kwargs = {
+                                    "key": f'{action_item["key_prefix"]}-{index}',
+                                    "help": str(action_item["help"]),
+                                    "type": "tertiary",
+                                }
+                                if action_item.get("icon"):
+                                    action_button_kwargs["icon"] = str(action_item["icon"])
+                                action_button_label = str(action_item.get("label", ""))
+                                if action_button_label:
+                                    with st.container(key=f'html-table-action-{safe_table_id}-{index}-{action_item["key_prefix"]}'):
+                                        clicked = st.button(action_button_label, **action_button_kwargs)
+                                else:
+                                    clicked = st.button("", **action_button_kwargs)
+                                if clicked:
+                                    action_item["callback"](index)
+        return
+
     table_kind = "catalog" if headers == ["Source", "Database", "Schema", "Table", "Type", "Rows", "Columns"] else "metadata"
     header_html = "".join(
         f"<th class='html-table-cell {cell_class(header)}' scope='col'>{escape(header)}</th>"
@@ -264,18 +331,20 @@ def render_html_table(
     body_html = "".join(
         "<tr>"
         + "".join(
-            f"<td class='html-table-cell {cell_class(header)}'>{formatted_cell(header, row.get(key), row)}</td>"
+            f"<td class='html-table-cell {cell_class(header)}{' html-table-cell--special' if cell_renderers and header in cell_renderers else ''}'>{formatted_cell(header, row.get(key), row)}</td>"
             for key, header in zip(visible_columns, visible_headers)
         )
         + "</tr>"
         for row in rows
     )
     if not rows:
+        assert table_shell is not None
         table_shell.markdown(
             f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-empty">No matching rows.</div></div>',
             unsafe_allow_html=True,
         )
         return
+    assert table_shell is not None
     table_shell.markdown(
         f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}"><thead><tr>{header_html}</tr></thead>'
         f"<tbody>{body_html}</tbody></table></div></div>",
@@ -288,11 +357,13 @@ def render_count_chips(
     items: list[tuple[str, int]],
     description: str | None = None,
     kind: str = "default",
+    footer: str | None = None,
 ) -> None:
     """Render compact labeled counts for deterministic documentation summaries."""
     if not items:
         return
     description_html = f'<div class="documentation-count-description">{escape(description)}</div>' if description else ""
+    footer_html = f'<div class="documentation-count-footer">{escape(footer)}</div>' if footer else ""
     chips = "".join(
         f'<span class="documentation-count-item documentation-count-item--{escape(kind)}">'
         f'<span class="documentation-count-label">{escape(label)}</span>'
@@ -301,7 +372,7 @@ def render_count_chips(
     )
     st.markdown(
         f'<div class="documentation-count-breakdown documentation-count-breakdown--{escape(kind)}">'
-        f'<div class="documentation-count-title">{escape(title)}</div>{description_html}{chips}</div>',
+        f'<div class="documentation-count-title">{escape(title)}</div>{description_html}{chips}{footer_html}</div>',
         unsafe_allow_html=True,
     )
 
@@ -330,9 +401,10 @@ def render_get_started_workflow(steps: list[tuple[str, str]], class_name: str = 
 
 
 def render_quick_access_card(icon: str, title: str, description: str, callback, page_path: str) -> None:
-    st.markdown(
-        f'<div class="quick-card"><div class="quick-icon">{svg_icon(icon, 20)}</div>'
-        f'<div class="quick-title">{title}</div><div class="quick-description">{description}</div></div>',
-        unsafe_allow_html=True,
-    )
-    st.button("Open", icon=":material/arrow_forward:", on_click=callback, args=(page_path,), key=f"open_{title}")
+    with st.container(key=f"quick-card-{sanitize_table_id(title)}"):
+        st.markdown(
+            f'<div class="quick-card"><div class="quick-card-content"><div class="quick-icon">{svg_icon(icon, 20)}</div>'
+            f'<div><div class="quick-title">{title}</div><div class="quick-description">{description}</div></div></div></div>',
+            unsafe_allow_html=True,
+        )
+        st.page_link(page_path, label="Open", icon=":material/arrow_forward:")

@@ -69,6 +69,36 @@ class SQLServerQualityDialect(QualityDialect):
             return self._aggregate(table, case((predicate, 1), else_=0))
         raise TypeError(f"Unsupported quality rule: {type(rule).__name__}")
 
+    def build_failure_detail_statement(self, engine: Any, table_metadata: TableMetadata, rule: QualityRule, limit: int) -> Select[Any] | None:
+        table = self._reflect_table(engine, table_metadata)
+        column = self._column(table, rule.column)
+        if isinstance(rule, NotNullRule):
+            return None
+        if isinstance(rule, (DuplicateRule, UniqueRule)):
+            return self._duplicate_failure_detail(table, column, limit)
+        if isinstance(rule, AcceptedValuesRule):
+            predicate = column.is_not(None) & column.not_in(bindparam("accepted_values", expanding=True))
+        elif isinstance(rule, NumericRangeRule):
+            predicates = []
+            if rule.min_value is not None:
+                predicates.append(column < bindparam("min_value"))
+            if rule.max_value is not None:
+                predicates.append(column > bindparam("max_value"))
+            predicate = column.is_not(None) & self._or(predicates)
+        elif isinstance(rule, StringLengthRule):
+            predicates = []
+            if rule.min_length is not None:
+                predicates.append(func.len(column) < bindparam("min_length"))
+            if rule.max_length is not None:
+                predicates.append(func.len(column) > bindparam("max_length"))
+            predicate = column.is_not(None) & self._or(predicates)
+        elif isinstance(rule, FreshnessRule):
+            cutoff = func.dateadd(literal_column("day"), -bindparam("max_age_days"), func.current_timestamp())
+            predicate = column.is_not(None) & (column < cutoff)
+        else:
+            return None
+        return self._grouped_failure_detail(table, column, predicate, limit)
+
     def _or(self, predicates: list[Any]) -> Any:
         if len(predicates) == 1:
             return predicates[0]

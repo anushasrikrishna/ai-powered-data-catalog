@@ -14,6 +14,7 @@ from ui.connection_workflow import (
     ConnectionWorkflowSelection,
     clear_preview,
     render_connection_workflow,
+    render_connections_table,
     render_table_preview,
     run_table_preview,
     safe_connection_error,
@@ -191,6 +192,7 @@ render_get_started_workflow(
     class_name="get-started-workflow metadata-scan-workflow",
 )
 
+render_connections_table()
 selection = render_connection_workflow(extra_clear_keys=SCAN_CLEAR_KEYS)
 
 if selection is not None:

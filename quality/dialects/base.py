@@ -57,6 +57,43 @@ class QualityDialect(ABC):
             failed_records.label("failed_records"),
         ).select_from(table)
 
+    def build_failure_detail_statement(
+        self,
+        engine: Any,
+        table_metadata: TableMetadata,
+        rule: QualityRule,
+        limit: int,
+    ) -> Select[Any] | None:
+        """Return a bounded grouped failure-value query when the dialect supports it."""
+        return None
+
+    def _grouped_failure_detail(self, table: Table, column: Any, predicate: Any, limit: int) -> Select[Any]:
+        count = func.count().label("failure_count")
+        return (
+            select(column.label("failed_value"), count)
+            .select_from(table)
+            .where(predicate)
+            .group_by(column)
+            .order_by(count.desc())
+            .limit(max(1, min(int(limit), 20)))
+        )
+
+    def _duplicate_failure_detail(self, table: Table, column: Any, limit: int) -> Select[Any]:
+        duplicate_values = (
+            select(column.label("duplicate_value"))
+            .select_from(table)
+            .where(column.is_not(None))
+            .group_by(column)
+            .having(func.count() > 1)
+            .subquery()
+        )
+        return self._grouped_failure_detail(
+            table,
+            column,
+            column.in_(select(duplicate_values.c.duplicate_value)),
+            limit,
+        )
+
     def _column(self, table: Table, column_name: str) -> Any:
         if column_name in table.c:
             return table.c[column_name]

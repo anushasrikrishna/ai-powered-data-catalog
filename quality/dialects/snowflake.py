@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import bindparam, case, func, text
+from sqlalchemy import bindparam, case, func, literal_column
 from sqlalchemy.sql import Select
 
 from metadata.models import TableMetadata
@@ -19,8 +19,8 @@ from quality.rule_models import (
 )
 
 
-class PostgresQualityDialect(QualityDialect):
-    """PostgreSQL quality SQL using safe reflected identifiers and bound values."""
+class SnowflakeQualityDialect(QualityDialect):
+    """Snowflake quality SQL using reflected identifiers and bound values."""
 
     def build_check_statement(
         self,
@@ -51,15 +51,17 @@ class PostgresQualityDialect(QualityDialect):
         if isinstance(rule, StringLengthRule):
             predicates = []
             if rule.min_length is not None:
-                predicates.append(func.char_length(column) < bindparam("min_length"))
+                predicates.append(func.length(column) < bindparam("min_length"))
             if rule.max_length is not None:
-                predicates.append(func.char_length(column) > bindparam("max_length"))
+                predicates.append(func.length(column) > bindparam("max_length"))
             predicate = column.is_not(None) & self._or(predicates)
             return self._aggregate(table, case((predicate, 1), else_=0))
         if isinstance(rule, FreshnessRule):
-            cutoff = func.current_timestamp() - text(
-                "make_interval(days => :max_age_days)"
-            ).bindparams(max_age_days=rule.max_age_days)
+            cutoff = func.dateadd(
+                literal_column("day"),
+                -bindparam("max_age_days"),
+                func.current_timestamp(),
+            )
             predicate = column.is_not(None) & (column < cutoff)
             return self._aggregate(table, case((predicate, 1), else_=0))
         raise TypeError(f"Unsupported quality rule: {type(rule).__name__}")
@@ -83,12 +85,12 @@ class PostgresQualityDialect(QualityDialect):
         elif isinstance(rule, StringLengthRule):
             predicates = []
             if rule.min_length is not None:
-                predicates.append(func.char_length(column) < bindparam("min_length"))
+                predicates.append(func.length(column) < bindparam("min_length"))
             if rule.max_length is not None:
-                predicates.append(func.char_length(column) > bindparam("max_length"))
+                predicates.append(func.length(column) > bindparam("max_length"))
             predicate = column.is_not(None) & self._or(predicates)
         elif isinstance(rule, FreshnessRule):
-            cutoff = func.current_timestamp() - text("make_interval(days => :max_age_days)").bindparams(max_age_days=rule.max_age_days)
+            cutoff = func.dateadd(literal_column("day"), -bindparam("max_age_days"), func.current_timestamp())
             predicate = column.is_not(None) & (column < cutoff)
         else:
             return None
@@ -100,4 +102,4 @@ class PostgresQualityDialect(QualityDialect):
         return predicates[0] | predicates[1]
 
 
-__all__ = ["PostgresQualityDialect"]
+__all__ = ["SnowflakeQualityDialect"]
