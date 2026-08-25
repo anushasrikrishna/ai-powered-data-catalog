@@ -10,12 +10,16 @@ from connectors.exceptions import ConnectorError
 from connectors.postgres_connector import PostgresConnector
 from connectors.snowflake_connector import SnowflakeConnector
 from connectors.sqlserver_connector import SQLServerConnector
+from core.connection_registry import ConnectionEntry, connection_id_for, get_connection_registry
 from ui.components import loading_indicator, render_empty_state, render_html_table
 
 
 SOURCE_OPTIONS = ("SQL Server", "PostgreSQL", "Snowflake")
+CHOOSE_SCHEMA = "Choose a schema"
+CHOOSE_TABLE = "Choose a table"
 
 CONNECTOR_STATE_KEY = "connections_connector"
+ACTIVE_CONNECTION_ID_KEY = "connections_active_connection_id"
 SOURCE_STATE_KEY = "connections_source"
 SIGNATURE_STATE_KEY = "connections_settings_signature"
 STATUS_STATE_KEY = "connections_status"
@@ -23,8 +27,10 @@ ACTIVE_SOURCE_STATE_KEY = "connections_active_source"
 ACTIVE_DATABASE_STATE_KEY = "connections_active_database"
 CONFIGURED_DATABASE_STATE_KEY = "connections_configured_database"
 SCHEMAS_STATE_KEY = "connections_schemas"
+SCHEMAS_CONNECTION_KEY = "connections_schemas_connection"
 TABLES_STATE_KEY = "connections_tables"
 TABLES_SCHEMA_STATE_KEY = "connections_tables_schema"
+TABLES_CONNECTION_KEY = "connections_tables_connection"
 SELECTED_SCHEMA_STATE_KEY = "connections_selected_schema"
 SELECTED_TABLE_STATE_KEY = "connections_selected_table"
 PREVIEW_COLUMNS_KEY = "connections_preview_columns"
@@ -71,6 +77,99 @@ def safe_connection_error(message: str) -> str:
     return message
 
 
+def _connection_status_cell(value: Any, _row: dict[Any, Any]) -> str:
+    return '<span class="connection-status connection-status--connected"><span aria-hidden="true">●</span> Connected</span>'
+
+
+def _connection_rows() -> list[dict[str, Any]]:
+    rows = []
+    for entry in get_connection_registry().entries():
+        rows.append(
+            {
+                "Source": source_display_name(entry.source_type),
+                "Database": entry.database_name or "—",
+                "Server / Account": entry.server_or_account or "—",
+                "Status": "CONNECTED",
+                "Action": entry.connection_id,
+            }
+        )
+    return rows
+
+
+def _invalidate_quality_result_for(entry: ConnectionEntry) -> None:
+    target = str(st.session_state.get("quality_execution_result_dataset", ""))
+    prefix = f"{entry.source_type}|{entry.database_name.strip().lower()}|"
+    if target.startswith(prefix):
+        for key in (
+            "quality_execution_result",
+            "quality_execution_result_dataset",
+            "quality_execution_result_rule_signature",
+        ):
+            st.session_state.pop(key, None)
+        st.session_state["quality_review_ready"] = False
+        st.session_state["quality_run_status"] = "ready"
+
+
+def _disconnect_connection(index: int) -> None:
+    entries = get_connection_registry().entries()
+    if index < len(entries):
+        connection_id = entries[index].connection_id
+        entry = get_connection_registry().disconnect(connection_id)
+        if entry is not None:
+            _invalidate_quality_result_for(entry)
+        if st.session_state.get(ACTIVE_CONNECTION_ID_KEY) == connection_id:
+            _clear_browse_selection()
+            st.session_state.pop(ACTIVE_CONNECTION_ID_KEY, None)
+            st.session_state.pop(CONNECTOR_STATE_KEY, None)
+            st.session_state[STATUS_STATE_KEY] = "not_configured"
+        st.rerun()
+
+
+def render_connections_table() -> None:
+    """Render active session connections using the shared table UI."""
+    st.markdown('<div class="section-kicker">CONNECTIONS</div>', unsafe_allow_html=True)
+    rows = _connection_rows()
+    if not rows:
+        st.caption("No active source connections in this session.")
+        return
+    action_items = [
+        {"label": "Disconnect", "key_prefix": "disconnect-connection", "help": "Disconnect", "callback": _disconnect_connection},
+    ]
+    render_html_table(
+        rows,
+        table_id="session-connections",
+        download=False,
+        column_widths=[20, 22, 27, 16, 15],
+        cell_renderers={"Status": _connection_status_cell},
+        action={"header": "Action", "actions": action_items},
+    )
+
+
+def render_connected_sources_table() -> None:
+    """Render connected registry entries as read-only Data Quality context."""
+    st.markdown('<div class="section-kicker">CONNECTED SOURCES</div>', unsafe_allow_html=True)
+    entries = [entry for entry in get_connection_registry().entries() if entry.connected]
+    if not entries:
+        st.caption("No live source connections are currently available.")
+        return
+    rows = [
+        {
+            "Source": source_display_name(entry.source_type),
+            "Database": entry.database_name or "—",
+            "Server / Account": entry.server_or_account or "—",
+            "Status": "CONNECTED",
+        }
+        for entry in entries
+    ]
+    render_html_table(
+        rows,
+        table_id="connected-quality-sources",
+        download=False,
+        column_widths=[20, 22, 27, 31],
+        cell_renderers={"Status": _connection_status_cell},
+    )
+
+
 def clear_preview() -> None:
     for key in (
         PREVIEW_COLUMNS_KEY,
@@ -94,6 +193,8 @@ def _clear_browse_selection(extra_clear_keys: tuple[str, ...] = ()) -> None:
         SCHEMAS_STATE_KEY,
         TABLES_STATE_KEY,
         TABLES_SCHEMA_STATE_KEY,
+        SCHEMAS_CONNECTION_KEY,
+        TABLES_CONNECTION_KEY,
     ):
         st.session_state.pop(key, None)
     clear_preview()
@@ -101,18 +202,25 @@ def _clear_browse_selection(extra_clear_keys: tuple[str, ...] = ()) -> None:
 
 
 def dispose_connector(extra_clear_keys: tuple[str, ...] = ()) -> None:
-    connector = st.session_state.pop(CONNECTOR_STATE_KEY, None)
+    registry = get_connection_registry()
+    connection_id = st.session_state.pop(ACTIVE_CONNECTION_ID_KEY, None)
+    if connection_id:
+        registry.disconnect(connection_id)
+    st.session_state.pop(CONNECTOR_STATE_KEY, None)
     st.session_state.pop(SIGNATURE_STATE_KEY, None)
     st.session_state.pop(ACTIVE_SOURCE_STATE_KEY, None)
     st.session_state.pop(ACTIVE_DATABASE_STATE_KEY, None)
     st.session_state.pop(CONFIGURED_DATABASE_STATE_KEY, None)
     _clear_browse_selection(extra_clear_keys)
-    if connector is not None:
-        connector.dispose()
 
 
 def _source_changed(extra_clear_keys: tuple[str, ...] = ()) -> None:
-    dispose_connector(extra_clear_keys)
+    st.session_state.pop(ACTIVE_CONNECTION_ID_KEY, None)
+    st.session_state.pop(CONNECTOR_STATE_KEY, None)
+    st.session_state.pop(ACTIVE_SOURCE_STATE_KEY, None)
+    st.session_state.pop(ACTIVE_DATABASE_STATE_KEY, None)
+    st.session_state.pop(CONFIGURED_DATABASE_STATE_KEY, None)
+    _clear_browse_selection(extra_clear_keys)
     st.session_state[STATUS_STATE_KEY] = "not_configured"
 
 
@@ -295,7 +403,6 @@ def _render_connection_form(source: str) -> dict[str, Any]:
 
 
 def _test_connection(source: str, settings: dict[str, Any], signature: str, extra_clear_keys: tuple[str, ...]) -> None:
-    dispose_connector(extra_clear_keys)
     st.session_state[STATUS_STATE_KEY] = "connecting"
     connector = None
     try:
@@ -322,12 +429,19 @@ def _test_connection(source: str, settings: dict[str, Any], signature: str, extr
             connector.list_databases()
         with loading_indicator("Loading schemas..."):
             schemas = connector.list_schemas()
-        st.session_state[CONNECTOR_STATE_KEY] = connector
-        st.session_state[SIGNATURE_STATE_KEY] = signature
-        st.session_state[ACTIVE_SOURCE_STATE_KEY] = source
-        st.session_state[CONFIGURED_DATABASE_STATE_KEY] = str(settings.get("database") or "").strip()
-        st.session_state[ACTIVE_DATABASE_STATE_KEY] = st.session_state[CONFIGURED_DATABASE_STATE_KEY]
+        registry = get_connection_registry()
+        previous_id = st.session_state.get(ACTIVE_CONNECTION_ID_KEY)
+        entry = registry.register(source, validated_settings, connector, settings_signature=signature)
+        if previous_id != entry.connection_id:
+            _clear_browse_selection(extra_clear_keys)
+        st.session_state[ACTIVE_CONNECTION_ID_KEY] = entry.connection_id
+        st.session_state[CONNECTOR_STATE_KEY] = entry.connector
+        st.session_state[SIGNATURE_STATE_KEY] = entry.settings_signature
+        st.session_state[ACTIVE_SOURCE_STATE_KEY] = entry.source_type
+        st.session_state[CONFIGURED_DATABASE_STATE_KEY] = entry.database_name
+        st.session_state[ACTIVE_DATABASE_STATE_KEY] = entry.database_name
         st.session_state[SCHEMAS_STATE_KEY] = schemas
+        st.session_state[SCHEMAS_CONNECTION_KEY] = entry.connection_id
         st.session_state[STATUS_STATE_KEY] = "connected"
     except ConnectorError as exc:
         if connector is not None:
@@ -348,12 +462,14 @@ def _render_browse_selectors(connector: Any, source: str, extra_clear_keys: tupl
     st.markdown('<div class="section-kicker">CONNECTED DATABASE</div>', unsafe_allow_html=True)
     st.write(connected_database)
 
-    schemas = st.session_state.get(SCHEMAS_STATE_KEY)
+    connection_id = st.session_state.get(ACTIVE_CONNECTION_ID_KEY)
+    schemas = st.session_state.get(SCHEMAS_STATE_KEY) if st.session_state.get(SCHEMAS_CONNECTION_KEY) == connection_id else None
     if schemas is None:
         try:
             with loading_indicator("Loading schemas..."):
                 schemas = connector.list_schemas()
             st.session_state[SCHEMAS_STATE_KEY] = schemas
+            st.session_state[SCHEMAS_CONNECTION_KEY] = connection_id
         except ConnectorError as exc:
             st.error(safe_connection_error(str(exc)))
             return None
@@ -365,28 +481,33 @@ def _render_browse_selectors(connector: Any, source: str, extra_clear_keys: tupl
         render_empty_state("No schemas available", "The selected database contains no browsable schemas.", "catalog")
         return None
 
-    preferred_schema = _preferred_schema(source, schemas)
-    if st.session_state.get(SELECTED_SCHEMA_STATE_KEY) not in schemas:
-        st.session_state[SELECTED_SCHEMA_STATE_KEY] = preferred_schema or schemas[0]
+    schema_options = [CHOOSE_SCHEMA] + list(schemas)
+    if st.session_state.get(SELECTED_SCHEMA_STATE_KEY) not in schema_options:
+        st.session_state[SELECTED_SCHEMA_STATE_KEY] = CHOOSE_SCHEMA
         clear_preview()
         clear_keys(extra_clear_keys)
 
     selected_schema = st.selectbox(
         "Schema",
-        schemas,
+        schema_options,
         key=SELECTED_SCHEMA_STATE_KEY,
         on_change=_schema_changed,
         args=(extra_clear_keys,),
     )
 
+    if selected_schema == CHOOSE_SCHEMA:
+        st.caption("Choose a schema to browse its tables.")
+        return None
+
     tables_schema = st.session_state.get(TABLES_SCHEMA_STATE_KEY)
-    tables = st.session_state.get(TABLES_STATE_KEY)
+    tables = st.session_state.get(TABLES_STATE_KEY) if st.session_state.get(TABLES_CONNECTION_KEY) == connection_id else None
     if tables_schema != selected_schema or tables is None:
         try:
             with loading_indicator("Loading tables..."):
                 tables = connector.list_tables(selected_schema)
             st.session_state[TABLES_STATE_KEY] = tables
             st.session_state[TABLES_SCHEMA_STATE_KEY] = selected_schema
+            st.session_state[TABLES_CONNECTION_KEY] = connection_id
         except ConnectorError as exc:
             st.error(safe_connection_error(str(exc)))
             return None
@@ -398,19 +519,24 @@ def _render_browse_selectors(connector: Any, source: str, extra_clear_keys: tupl
         render_empty_state("No tables available", "The selected schema contains no browsable tables.", "catalog")
         return None
 
-    if st.session_state.get(SELECTED_TABLE_STATE_KEY) not in tables:
-        st.session_state[SELECTED_TABLE_STATE_KEY] = tables[0]
+    table_options = [CHOOSE_TABLE] + list(tables)
+    if st.session_state.get(SELECTED_TABLE_STATE_KEY) not in table_options:
+        st.session_state[SELECTED_TABLE_STATE_KEY] = CHOOSE_TABLE
         clear_preview()
         clear_keys(extra_clear_keys)
 
     selected_table = st.selectbox(
         "Table",
-        tables,
+        table_options,
         key=SELECTED_TABLE_STATE_KEY,
         on_change=_table_changed,
         args=(extra_clear_keys,),
     )
     st.caption(f"{len(tables)} table(s) available in {selected_schema}.")
+
+    if selected_table == CHOOSE_TABLE:
+        st.caption("Choose a table to preview or scan metadata.")
+        return None
 
     return ConnectionWorkflowSelection(
         connector=connector,
@@ -423,6 +549,7 @@ def _render_browse_selectors(connector: Any, source: str, extra_clear_keys: tupl
 
 
 def render_connection_workflow(extra_clear_keys: tuple[str, ...] = ()) -> ConnectionWorkflowSelection | None:
+    registry = get_connection_registry()
     if STATUS_STATE_KEY not in st.session_state:
         st.session_state[STATUS_STATE_KEY] = "not_configured"
 
@@ -438,26 +565,48 @@ def render_connection_workflow(extra_clear_keys: tuple[str, ...] = ()) -> Connec
         label_visibility="collapsed",
     )
 
+    source_entries = [entry for entry in registry.entries() if entry.source_type == source_type(source)]
+    active_connection_id = st.session_state.get(ACTIVE_CONNECTION_ID_KEY)
+    selected_entry = registry.get(active_connection_id)
+    if selected_entry is not None and selected_entry.source_type != source_type(source):
+        selected_entry = None
+        st.session_state.pop(ACTIVE_CONNECTION_ID_KEY, None)
+    if selected_entry is not None:
+        _populate_form_state(source, selected_entry)
+        st.session_state[ACTIVE_CONNECTION_ID_KEY] = selected_entry.connection_id
+    elif active_connection_id not in {entry.connection_id for entry in source_entries}:
+        st.session_state.pop(ACTIVE_CONNECTION_ID_KEY, None)
+
     st.markdown('<div class="section-kicker">CONNECTION DETAILS</div>', unsafe_allow_html=True)
     settings = _render_connection_form(source)
     signature = _settings_signature(source, settings)
 
-    if (
-        st.session_state.get(STATUS_STATE_KEY) == "connected"
-        and st.session_state.get(SIGNATURE_STATE_KEY)
-        and st.session_state.get(SIGNATURE_STATE_KEY) != signature
-    ):
-        dispose_connector(extra_clear_keys)
+    active_entry = registry.get(st.session_state.get(ACTIVE_CONNECTION_ID_KEY))
+    active_matches_form = active_entry is not None and active_entry.settings_signature == signature
+    if not active_matches_form and selected_entry is None:
+        active_entry = registry.get(connection_id_for(source, settings))
+        if active_entry is not None:
+            st.session_state[ACTIVE_CONNECTION_ID_KEY] = active_entry.connection_id
+            active_matches_form = active_entry.settings_signature == signature
+
+    if active_entry is not None and active_entry.connected and active_matches_form:
+        st.session_state[CONNECTOR_STATE_KEY] = active_entry.connector
+        st.session_state[SIGNATURE_STATE_KEY] = active_entry.settings_signature
+        st.session_state[ACTIVE_SOURCE_STATE_KEY] = active_entry.source_type
+        st.session_state[CONFIGURED_DATABASE_STATE_KEY] = active_entry.database_name
+        st.session_state[ACTIVE_DATABASE_STATE_KEY] = active_entry.database_name
+        st.session_state[STATUS_STATE_KEY] = "connected"
+    else:
         st.session_state[STATUS_STATE_KEY] = "not_configured"
 
     if st.button("Test Connection", type="primary", icon=":material/bolt:", key="connections_test_button"):
         _test_connection(source, settings, signature, extra_clear_keys)
 
-    if st.session_state.get(STATUS_STATE_KEY) == "connected":
+    if st.session_state.get(STATUS_STATE_KEY) == "connected" and active_entry is not None:
         st.success("Connected successfully.")
         return _render_browse_selectors(
-            st.session_state[CONNECTOR_STATE_KEY],
-            st.session_state.get(ACTIVE_SOURCE_STATE_KEY, source),
+            active_entry.connector,
+            source,
             extra_clear_keys,
         )
 
@@ -465,6 +614,16 @@ def render_connection_workflow(extra_clear_keys: tuple[str, ...] = ()) -> Connec
         st.info("Enter connection details and test the connection to begin browsing.")
 
     return None
+
+
+def _populate_form_state(source: str, entry: ConnectionEntry) -> None:
+    prefix = {
+        "SQL Server": "connections_sqlserver_",
+        "PostgreSQL": "connections_postgres_",
+        "Snowflake": "connections_snowflake_",
+    }[source]
+    for key, value in entry._runtime_settings.items():
+        st.session_state[f"{prefix}{key}"] = value
 
 
 def run_table_preview(selection: ConnectionWorkflowSelection) -> None:

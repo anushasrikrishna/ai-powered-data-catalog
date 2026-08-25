@@ -4,16 +4,20 @@ import unittest
 
 from sqlalchemy import Column, DateTime, Integer, MetaData, String, Table, create_engine
 from sqlalchemy.dialects import mssql, postgresql
+from snowflake.sqlalchemy import dialect as snowflake_dialect
 
 from metadata.models import ColumnMetadata, TableMetadata
 from quality.dialects.postgres import PostgresQualityDialect
+from quality.dialects.snowflake import SnowflakeQualityDialect
 from quality.dialects.sqlserver import SQLServerQualityDialect
 from quality.rule_models import (
     AcceptedValuesRule,
+    DuplicateRule,
     FreshnessRule,
     NotNullRule,
     NumericRangeRule,
     StringLengthRule,
+    UniqueRule,
 )
 
 
@@ -85,3 +89,45 @@ class TestQualityDialects(unittest.TestCase):
         )
         self.assertIn("max_age_days", freshness.compile().params)
         self.assertEqual(freshness.compile().params["max_age_days"], 30)
+
+    def test_snowflake_supports_all_rule_types_with_bound_parameters(self) -> None:
+        dialect = SnowflakeQualityDialect()
+        snowflake = snowflake_dialect()
+        rules = (
+            NotNullRule(column="status"),
+            DuplicateRule(column="status"),
+            UniqueRule(column="status"),
+            AcceptedValuesRule(column="status", accepted_values=["O'Reilly"]),
+            NumericRangeRule(column="id", min_value=1, max_value=10),
+            StringLengthRule(column="status", max_length=10),
+            FreshnessRule(column="updated_at", max_age_days=30),
+        )
+        for rule in rules:
+            statement = dialect.build_check_statement(self.engine, self.table_metadata, rule)
+            compiled = str(statement.compile(dialect=snowflake))
+            self.assertIn("total_records", compiled)
+            self.assertIn("failed_records", compiled)
+
+        accepted = dialect.build_check_statement(
+            self.engine,
+            self.table_metadata,
+            AcceptedValuesRule(column="status", accepted_values=["O'Reilly"]),
+        )
+        self.assertIn("accepted_values", accepted.compile().params)
+        self.assertNotIn("O'Reilly", str(accepted))
+
+        string_length = dialect.build_check_statement(
+            self.engine,
+            self.table_metadata,
+            StringLengthRule(column="status", max_length=10),
+        )
+        self.assertIn("length", str(string_length.compile(dialect=snowflake)).lower())
+
+        freshness = dialect.build_check_statement(
+            self.engine,
+            self.table_metadata,
+            FreshnessRule(column="updated_at", max_age_days=30),
+        )
+        freshness_compiled = str(freshness.compile(dialect=snowflake)).lower()
+        self.assertIn("dateadd", freshness_compiled)
+        self.assertIn("max_age_days", freshness.compile().params)

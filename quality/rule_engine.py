@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from metadata.models import TableMetadata
 from quality.dialects.base import QualityDialect
 from quality.dialects.postgres import PostgresQualityDialect
+from quality.dialects.snowflake import SnowflakeQualityDialect
 from quality.dialects.sqlserver import SQLServerQualityDialect
 from quality.rule_models import (
     FreshnessRule,
@@ -16,6 +17,9 @@ from quality.rule_models import (
     StringLengthRule,
     parse_quality_rule,
 )
+
+
+FAILURE_DETAIL_LIMIT = 10
 
 
 class QualityResult(BaseModel):
@@ -55,6 +59,7 @@ class QualityRuleEngine:
         self._dialects: dict[str, QualityDialect] = {
             "sqlserver": SQLServerQualityDialect(),
             "postgresql": PostgresQualityDialect(),
+            "snowflake": SnowflakeQualityDialect(),
         }
         if dialects:
             for source_type, dialect in dialects.items():
@@ -118,6 +123,36 @@ class QualityRuleEngine:
             quality_score=quality_score,
             results=results,
         )
+
+    def inspect_failed_values(
+        self,
+        connector: Any,
+        table_metadata: TableMetadata,
+        rule: QualityRule | dict[str, Any],
+        limit: int = FAILURE_DETAIL_LIMIT,
+    ) -> list[dict[str, Any]]:
+        """Lazily retrieve a small, grouped set of live failure values."""
+        validated_rule = parse_quality_rule(rule)
+        self._validate_rule_against_metadata(table_metadata, validated_rule)
+        dialect = self._dialect_for(table_metadata.source_type)
+        engine = getattr(connector, "engine", None)
+        if engine is None:
+            raise ValueError("connector must expose a SQLAlchemy engine")
+        statement = dialect.build_failure_detail_statement(
+            engine,
+            table_metadata,
+            validated_rule,
+            max(1, min(int(limit), 20)),
+        )
+        if statement is None:
+            return []
+        parameters = self._parameters(validated_rule)
+        with engine.connect() as connection:
+            rows = connection.execute(statement, parameters).mappings().all()
+        return [
+            {"failed_value": row.get("failed_value"), "failure_count": int(row.get("failure_count") or 0)}
+            for row in rows
+        ]
 
     def _dialect_for(self, source_type: str) -> QualityDialect:
         canonical_source = self._canonical_source_type(source_type)
@@ -203,4 +238,4 @@ class QualityRuleEngine:
         }.get(normalized, normalized)
 
 
-__all__ = ["QualityReport", "QualityResult", "QualityRuleEngine"]
+__all__ = ["FAILURE_DETAIL_LIMIT", "QualityReport", "QualityResult", "QualityRuleEngine"]

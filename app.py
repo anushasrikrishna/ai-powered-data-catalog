@@ -99,15 +99,15 @@ def home_page() -> None:
                 "database",
                 "Connected Sources",
                 f"{connected_sources:,}",
-                _connected_sources_detail(connected_sources),
+                "Available data sources",
             ),
             (
                 "catalog",
                 "Cataloged Datasets",
                 f"{cataloged_datasets:,}",
-                _cataloged_datasets_detail(cataloged_datasets),
+                "Discoverable datasets",
             ),
-            ("quality", "Quality Score", "--", "Run quality checks to calculate"),
+            ("quality", "Quality Score", "--", "Overall data quality"),
         ]
     )
 

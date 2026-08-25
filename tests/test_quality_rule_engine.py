@@ -8,6 +8,7 @@ from sqlalchemy import Column, DateTime, Integer, MetaData, Numeric, String, Tab
 from sqlalchemy.pool import StaticPool
 
 from metadata.models import ColumnMetadata, TableMetadata
+from quality.dialects.snowflake import SnowflakeQualityDialect
 from quality.rule_engine import QualityRuleEngine
 from quality.rule_models import (
     AcceptedValuesRule,
@@ -230,6 +231,9 @@ class TestQualityRuleEngine(unittest.TestCase):
                 self.table_metadata.model_copy(update={"source_type": "oracle"}),
                 NotNullRule(column="email"),
             )
+
+    def test_snowflake_dialect_is_registered_by_default(self) -> None:
+        self.assertIsInstance(self.engine_under_test._dialect_for("snowflake"), SnowflakeQualityDialect)
 
     def test_empty_table_success_has_zero_counts_and_no_score(self) -> None:
         with self.engine.begin() as connection:
