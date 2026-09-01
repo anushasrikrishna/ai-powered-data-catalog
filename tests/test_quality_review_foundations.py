@@ -158,6 +158,24 @@ class TestQualityReviewFoundations(unittest.TestCase):
             self.assertEqual([run.run_id for run in runs], ["run-3", "run-2", "run-1"])
             self.assertEqual([run.report.quality_score for run in reversed(runs)], [91.2, 94.3, 96.1])
 
+    def test_latest_run_for_user_is_timestamp_ordered_and_isolated(self) -> None:
+        def report(score: float) -> QualityReport:
+            return QualityReport(
+                source_type="sqlserver", database_name="quality_db", schema_name="dbo", table_name="orders",
+                total_rules=1, passed_rules=1, failed_rules=0, error_rules=0, quality_score=score, results=[],
+            )
+
+        with TemporaryDirectory() as directory:
+            repository = QualityRunRepository(Path(directory) / "history.db")
+            repository.save_quality_run("run-old", report(90.0), "2026-08-25T00:00:00+00:00", user_id="user-a")
+            repository.save_quality_run("run-new", report(96.0), "2026-08-26T00:00:00+00:00", user_id="user-a")
+            repository.save_quality_run("run-b", report(83.0), "2026-08-27T00:00:00+00:00", user_id="user-b")
+            latest_a = repository.get_latest_run_for_user("user-a")
+            latest_b = repository.get_latest_run_for_user("user-b")
+            self.assertEqual(latest_a.run_id, "run-new")
+            self.assertEqual(latest_a.report.quality_score, 96.0)
+            self.assertEqual(latest_b.run_id, "run-b")
+
 
 if __name__ == "__main__":
     unittest.main()

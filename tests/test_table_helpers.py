@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import unittest
 
-from ui.components import sanitize_table_id, table_to_csv
+from ui.components import resolve_table_action_value, sanitize_table_id, table_to_csv
 
 
 class TestTableHelpers(unittest.TestCase):
+    def test_row_aware_action_values_use_each_rendered_row_index(self) -> None:
+        label = lambda _row, row_index: "Added" if row_index == 0 else "Add Rule"
+
+        self.assertEqual(resolve_table_action_value(label, {"Rule": "Unique"}, 0), "Added")
+        self.assertEqual(resolve_table_action_value(label, {"Rule": "Not Null"}, 1), "Add Rule")
+
     def test_table_id_is_stable_and_dom_safe(self) -> None:
         self.assertEqual(sanitize_table_id("Catalog Results / 2026"), "Catalog-Results-2026")
         self.assertEqual(sanitize_table_id("!!!"), "table")

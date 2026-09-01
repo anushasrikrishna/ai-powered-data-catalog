@@ -5,7 +5,9 @@ import unittest
 from unittest.mock import MagicMock
 
 import requests
+from pydantic import ValidationError
 
+from ai.models import RuleSuggestionResponse
 from ai.ollama_client import OllamaClient
 
 
@@ -23,6 +25,17 @@ class FakeResponse:
 
 
 class TestOllamaClient(unittest.TestCase):
+    def test_structured_response_schema_requires_suggestions(self) -> None:
+        schema = RuleSuggestionResponse.model_json_schema()
+
+        self.assertEqual(schema["required"], ["suggestions"])
+        self.assertEqual(
+            RuleSuggestionResponse.model_validate({"suggestions": []}).suggestions,
+            [],
+        )
+        with self.assertRaises(ValidationError):
+            RuleSuggestionResponse.model_validate({})
+
     def test_ai_enabled_environment_forms(self) -> None:
         import os
         from unittest.mock import patch

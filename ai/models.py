@@ -37,7 +37,7 @@ class RawSuggestedRule(BaseModel):
 
 class RuleSuggestionResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    suggestions: list[RawSuggestedRule] = Field(default_factory=list)
+    suggestions: list[RawSuggestedRule]
 
 
 class ApprovedSuggestion(BaseModel):

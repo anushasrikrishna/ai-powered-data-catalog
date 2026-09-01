@@ -4,6 +4,7 @@ from typing import Any
 
 import streamlit as st
 
+from auth.session import current_user_id, require_authenticated
 from connectors.exceptions import ConnectorError
 from metadata.exceptions import MetadataError
 from metadata.extractor import MetadataExtractor
@@ -13,13 +14,16 @@ from ui.components import loading_indicator, render_empty_state, render_get_star
 from ui.connection_workflow import (
     ConnectionWorkflowSelection,
     clear_preview,
-    render_connection_workflow,
-    render_connections_table,
+    render_connected_metadata_selection,
+    render_connected_sources_table,
     render_table_preview,
     run_table_preview,
     safe_connection_error,
     source_display_name,
 )
+
+
+require_authenticated()
 
 
 SCAN_TARGET_STATE_KEY = "metadata_scan_target"
@@ -124,7 +128,7 @@ def _run_metadata_scan(selection: ConnectionWorkflowSelection) -> None:
                 table_name=target["table_name"],
             )
             repository = MetadataRepository()
-            repository.save_table_metadata(result)
+            repository.save_table_metadata(result, current_user_id())
         st.session_state[SCAN_TARGET_STATE_KEY] = target
         st.session_state[SCAN_RESULT_STATE_KEY] = result
         st.session_state[SCAN_RESULT_TARGET_STATE_KEY] = target
@@ -192,8 +196,9 @@ render_get_started_workflow(
     class_name="get-started-workflow metadata-scan-workflow",
 )
 
-render_connections_table()
-selection = render_connection_workflow(extra_clear_keys=SCAN_CLEAR_KEYS)
+render_connected_sources_table()
+st.markdown('<div class="section-kicker">SELECT DATABASE</div>', unsafe_allow_html=True)
+selection = render_connected_metadata_selection(extra_clear_keys=SCAN_CLEAR_KEYS)
 
 if selection is not None:
     action_columns = st.columns([1, 1, 4])
