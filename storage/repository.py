@@ -36,7 +36,8 @@ class MetadataRepository:
                     table_type TEXT NOT NULL,
                     row_count INTEGER,
                     scanned_at TEXT NOT NULL,
-                    UNIQUE (source_type, database_name, schema_name, table_name)
+                    user_id TEXT,
+                    UNIQUE (user_id, source_type, database_name, schema_name, table_name)
                 );
 
                 CREATE TABLE IF NOT EXISTS metadata_columns (
@@ -61,14 +62,62 @@ class MetadataRepository:
                     ON metadata_columns (table_metadata_id);
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(metadata_tables)").fetchall()}
+            if "user_id" not in columns:
+                self._migrate_legacy_ownership(connection)
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_metadata_tables_user_id ON metadata_tables(user_id)")
             connection.commit()
 
-    def save_table_metadata(self, metadata: TableMetadata) -> None:
+    def _migrate_legacy_ownership(self, connection: sqlite3.Connection) -> None:
+        """Rebuild the metadata tables with nullable owners; legacy rows stay unowned."""
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("ALTER TABLE metadata_columns RENAME TO metadata_columns_legacy")
+        connection.execute("ALTER TABLE metadata_tables RENAME TO metadata_tables_legacy")
+        connection.executescript(
+            """
+            CREATE TABLE metadata_tables (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                database_name TEXT NOT NULL,
+                schema_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                table_type TEXT NOT NULL,
+                row_count INTEGER,
+                scanned_at TEXT NOT NULL,
+                user_id TEXT,
+                UNIQUE (user_id, source_type, database_name, schema_name, table_name)
+            );
+            CREATE TABLE metadata_columns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                table_metadata_id INTEGER NOT NULL,
+                column_name TEXT NOT NULL,
+                source_data_type TEXT NOT NULL,
+                normalized_data_type TEXT NOT NULL,
+                nullable INTEGER NOT NULL,
+                ordinal_position INTEGER NOT NULL,
+                sample_values TEXT NOT NULL,
+                null_count INTEGER,
+                distinct_count INTEGER,
+                minimum TEXT NOT NULL,
+                maximum TEXT NOT NULL,
+                FOREIGN KEY (table_metadata_id) REFERENCES metadata_tables(id) ON DELETE CASCADE
+            );
+            """
+        )
+        connection.execute("INSERT INTO metadata_tables (id, source_type, database_name, schema_name, table_name, table_type, row_count, scanned_at, user_id) SELECT id, source_type, database_name, schema_name, table_name, table_type, row_count, scanned_at, NULL FROM metadata_tables_legacy")
+        connection.execute("INSERT INTO metadata_columns SELECT * FROM metadata_columns_legacy")
+        connection.execute("DROP TABLE metadata_columns_legacy")
+        connection.execute("DROP TABLE metadata_tables_legacy")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_metadata_columns_table_id ON metadata_columns(table_metadata_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_metadata_tables_user_id ON metadata_tables(user_id)")
+        connection.execute("PRAGMA foreign_keys = ON")
+
+    def save_table_metadata(self, metadata: TableMetadata, user_id: str | None = None) -> None:
         scanned_at = datetime.now(timezone.utc).isoformat()
         with connection_context(self.database_path) as connection:
             try:
                 with connection:
-                    table_id = self._upsert_table(connection, metadata, scanned_at)
+                    table_id = self._upsert_table(connection, metadata, scanned_at, user_id)
                     connection.execute(
                         "DELETE FROM metadata_columns WHERE table_metadata_id = ?",
                         (table_id,),
@@ -83,31 +132,33 @@ class MetadataRepository:
         database_name: str,
         schema_name: str,
         table_name: str,
+        user_id: str | None = None,
     ) -> TableMetadata | None:
         with connection_context(self.database_path) as connection:
             table_row = connection.execute(
                 """
                 SELECT id, source_type, database_name, schema_name, table_name, table_type, row_count
                 FROM metadata_tables
-                WHERE source_type = ?
+                WHERE user_id IS ? AND source_type = ?
                   AND database_name = ?
                   AND schema_name = ?
                   AND table_name = ?
                 """,
-                (source_type, database_name, schema_name, table_name),
+                (user_id, source_type, database_name, schema_name, table_name),
             ).fetchone()
             if table_row is None:
                 return None
             return self._table_from_row(connection, table_row)
 
-    def list_tables(self) -> list[TableMetadata]:
+    def list_tables(self, user_id: str | None = None) -> list[TableMetadata]:
         with connection_context(self.database_path) as connection:
             table_rows = connection.execute(
                 """
                 SELECT id, source_type, database_name, schema_name, table_name, table_type, row_count
                 FROM metadata_tables
+                WHERE user_id IS ?
                 ORDER BY source_type, database_name, schema_name, table_name
-                """
+                """ , (user_id,)
             ).fetchall()
             return [self._table_from_row(connection, table_row) for table_row in table_rows]
 
@@ -116,18 +167,19 @@ class MetadataRepository:
         connection: sqlite3.Connection,
         metadata: TableMetadata,
         scanned_at: str,
+        user_id: str | None = None,
     ) -> int:
         existing = connection.execute(
             """
             SELECT id
             FROM metadata_tables
-            WHERE source_type = ?
+            WHERE user_id IS ? AND source_type = ?
               AND database_name = ?
               AND schema_name = ?
               AND table_name = ?
             """,
             (
-                metadata.source_type,
+                user_id, metadata.source_type,
                 metadata.database_name,
                 metadata.schema_name,
                 metadata.table_name,
@@ -139,9 +191,9 @@ class MetadataRepository:
                 """
                 INSERT INTO metadata_tables (
                     source_type, database_name, schema_name, table_name,
-                    table_type, row_count, scanned_at
+                    table_type, row_count, scanned_at, user_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     metadata.source_type,
@@ -151,6 +203,7 @@ class MetadataRepository:
                     metadata.table_type,
                     metadata.row_count,
                     scanned_at,
+                    user_id,
                 ),
             )
             return int(cursor.lastrowid)

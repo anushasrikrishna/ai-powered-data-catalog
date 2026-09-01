@@ -5,6 +5,7 @@ from typing import Any
 
 import streamlit as st
 
+from auth.session import current_user_id, require_authenticated
 from documentation import MetadataDocumentationGenerator
 from documentation.models import TableDocumentation
 from catalog.repository import CatalogEntry, CatalogRepository
@@ -18,6 +19,9 @@ from ui.components import (
     render_page_header,
     render_workspace_status,
 )
+
+
+require_authenticated()
 
 
 ALL_SOURCES = "All Sources"
@@ -78,7 +82,7 @@ def _dataset_label(table_metadata: TableMetadata) -> str:
 def _load_catalog() -> tuple[list[TableMetadata], Exception | None]:
     try:
         repository = MetadataRepository()
-        return repository.list_tables(), None
+        return repository.list_tables(current_user_id()), None
     except Exception as exc:
         return [], exc
 

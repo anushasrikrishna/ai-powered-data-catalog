@@ -1,6 +1,10 @@
 import streamlit as st
 
+from auth.session import current_user_id, initialize_auth_state, is_authenticated, register_auth_pages
+from core.connection_registry import get_connection_registry
 from storage.repository import MetadataRepository
+from storage.quality_repository import QualityRunRepository
+from storage.user_repository import UserRepository
 from ui.components import (
     render_app_header,
     render_app_navigation,
@@ -20,6 +24,8 @@ st.set_page_config(
 
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
+initialize_auth_state()
+UserRepository().initialize()
 
 
 def request_page(page_path: str) -> None:
@@ -31,13 +37,13 @@ def _pluralize(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
 
 
-def _load_workspace_snapshot() -> tuple[int, int]:
+def _load_workspace_snapshot(user_id: str | None = None) -> tuple[int, int]:
     try:
-        tables = MetadataRepository().list_tables()
+        tables = MetadataRepository().list_tables(user_id)
     except Exception:
         return 0, 0
 
-    connected_sources = len({table.source_type.strip().lower() for table in tables if table.source_type.strip()})
+    connected_sources = len({entry.source_type for entry in get_connection_registry().entries() if entry.connected})
     cataloged_datasets = len(tables)
     return connected_sources, cataloged_datasets
 
@@ -61,26 +67,32 @@ if pending_page:
     st.switch_page(pending_page)
 
 def home_page() -> None:
-    connected_sources, cataloged_datasets = _load_workspace_snapshot()
+    connected_sources, cataloged_datasets = _load_workspace_snapshot(current_user_id())
+    latest_run = QualityRunRepository().get_latest_run_for_user(current_user_id())
+    latest_score = "--" if latest_run is None or latest_run.report.quality_score is None else f"{latest_run.report.quality_score:g}%"
 
     st.markdown(
-        '<section class="hero-panel"><div class="hero-eyebrow">DATA INTELLIGENCE WORKSPACE</div>'
-        '<div class="hero-title">Discover, understand and trust your enterprise data.</div>'
-        '<div class="hero-description">Connect SQL Server, PostgreSQL and Snowflake, '
-        'standardize metadata, discover datasets, monitor quality and export documentation '
-        'from one workspace.</div></section>',
+        '<section class="hero-panel"><div class="hero-layout"><div class="hero-copy-block">'
+        '<div class="hero-eyebrow">DATA INTELLIGENCE WORKSPACE</div>'
+        '<div class="hero-title">Connect. Catalog. Validate. Trust.</div>'
+        '<div class="hero-description">Connect enterprise sources, discover metadata and continuously '
+        'validate data quality from one workspace.</div></div>'
+        '<div class="hero-visual" aria-hidden="true"><div class="hero-visual-line hero-visual-line--one"></div>'
+        '<div class="hero-visual-line hero-visual-line--two"></div><div class="hero-visual-node hero-visual-node--one">▦</div>'
+        '<div class="hero-visual-node hero-visual-node--two">≡</div><div class="hero-visual-node hero-visual-node--three">✓</div>'
+        '</div></div></section>',
         unsafe_allow_html=True,
     )
 
     action_columns = st.columns([1.35, 1.2, 3.45])
     with action_columns[0]:
         st.button(
-            "Connect & Scan Data",
+            "Connect Data Source",
             icon=":material/database:",
             type="primary",
             use_container_width=True,
             on_click=request_page,
-            args=("pages/2_metadata_scan.py",),
+            args=("pages/1_connections.py",),
         )
     with action_columns[1]:
         st.button(
@@ -107,7 +119,7 @@ def home_page() -> None:
                 f"{cataloged_datasets:,}",
                 "Discoverable datasets",
             ),
-            ("quality", "Quality Score", "--", "Overall data quality"),
+            ("quality", "Quality Score", latest_score, "Overall data quality"),
         ]
     )
 
@@ -150,20 +162,26 @@ pages = [
     data_quality_page,
     reports_page,
 ]
+login_page = st.Page("pages/0_login.py", title="Login", icon=":material/login:")
+create_account_page = st.Page("pages/0_create_account.py", title="Create Account", icon=":material/person_add:")
+forgot_password_page = st.Page("pages/0_forgot_password.py", title="Forgot Password", icon=":material/help:")
+reset_password_page = st.Page("pages/0_reset_password.py", title="Reset Password", icon=":material/lock_reset:")
+register_auth_pages(overview_page, login_page)
+navigation = st.navigation(pages if is_authenticated() else [login_page, create_account_page, forgot_password_page, reset_password_page], position="hidden")
 
-navigation = st.navigation(pages, position="hidden")
-
-# The application shell owns global styling, the product header, navigation, and sidebar.
+# The authenticated application shell owns the product header, navigation, and sidebar.
 apply_theme()
-render_app_header()
-render_app_navigation(
-    [
-        (overview_page, "Overview", ":material/dashboard:"),
-        (metadata_scan_page, "Metadata Scan", ":material/manage_search:"),
-        (data_catalog_page, "Data Catalog", ":material/library_books:"),
-        (data_quality_page, "Data Quality", ":material/verified:"),
-        (reports_page, "Reports", ":material/description:"),
-    ]
-)
-render_sidebar()
+if is_authenticated():
+    render_app_header()
+    render_app_navigation(
+        [
+            (overview_page, "Overview", ":material/dashboard:"),
+            (connections_page, "Connections", ":material/database:"),
+            (metadata_scan_page, "Metadata Scan", ":material/manage_search:"),
+            (data_catalog_page, "Data Catalog", ":material/library_books:"),
+            (data_quality_page, "Data Quality", ":material/verified:"),
+            (reports_page, "Reports", ":material/description:"),
+        ]
+    )
+    render_sidebar()
 navigation.run()

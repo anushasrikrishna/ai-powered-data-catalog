@@ -1,6 +1,20 @@
 # ai-powered-data-catalog
 A generic framework that connects to SQL Server, PostgreSQL and Snowflake, automatically documents datasets, helps users discover relevant tables, runs data-quality checks and explains the results using a locally hosted AI model.
 
+## UI and branding
+
+The shared UI uses a restrained coral/navy enterprise design direction inspired by
+the public Endava brand language. No Endava logo or external runtime asset is
+bundled or hot-linked. If approved internal brand assets become available, place
+them under `assets/brand/endava/` and document their approval and source before
+use. The auth visual currently uses a local abstract CSS treatment as a safe
+fallback.
+
+Visual references reviewed:
+- https://www.endava.com/
+- https://www.endava.com/who-we-are/explore-our-brand
+- https://www.endava.com/who-we-are/media-relations
+
 ## Phase 2 connectors (Person 1)
 
 This phase implements backend connectors for SQL Server and PostgreSQL using a shared connector interface.

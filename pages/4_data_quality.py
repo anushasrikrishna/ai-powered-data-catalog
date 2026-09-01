@@ -7,9 +7,14 @@ from typing import Any
 from uuid import uuid4
 
 import streamlit as st
+
+from auth.session import current_user_id, require_authenticated
 from pydantic import ValidationError
 
 from core.connection_registry import canonical_source_type, get_connection_registry
+from ai.quality_rule_suggester import QualityRuleSuggester
+from documentation import MetadataDocumentationGenerator
+from ai.models import AISuggestionResult
 from metadata.models import TableMetadata
 from quality.common_checks import infer_common_rules
 from quality.rule_engine import FAILURE_DETAIL_LIMIT, QualityReport, QualityResult, QualityRuleEngine
@@ -21,6 +26,7 @@ from quality.rule_models import (
     NumericRangeRule,
     StringLengthRule,
     UniqueRule,
+    parse_quality_rule,
 )
 from storage.repository import MetadataRepository
 from storage.quality_repository import QualityRunRepository
@@ -31,6 +37,9 @@ from ui.connection_workflow import (
     safe_connection_error,
 )
 from ui.quality_trend import build_quality_trend_svg
+
+
+require_authenticated()
 
 
 QUALITY_RULES_KEY = "quality_configured_rules"
@@ -50,6 +59,12 @@ QUALITY_REVIEW_DETAIL_KEY = "quality_review_detail_selection"
 QUALITY_REVIEW_DETAIL_CACHE_KEY = "quality_review_detail_cache"
 QUALITY_RESULT_RUN_ID_KEY = "quality_execution_run_id"
 QUALITY_HISTORY_DATASET_KEY = "quality_history_dataset"
+QUALITY_AI_RESULT_KEY = "quality_ai_suggestion_result"
+QUALITY_AI_RESULT_DATASET_KEY = "quality_ai_suggestion_dataset"
+QUALITY_AI_IN_PROGRESS_KEY = "quality_ai_suggestion_in_progress"
+QUALITY_AI_ACCEPTED_KEY = "quality_ai_accepted_rule_identities"
+QUALITY_AI_DUPLICATE_NOTICE_KEY = "quality_ai_duplicate_notice"
+QUALITY_AI_SUGGESTER_KEY = "quality_ai_suggester"
 QUALITY_HISTORY_LIMIT = 10
 SELECT_COLUMN = "Select a column"
 SELECT_RULE_TYPE = "Select a rule type"
@@ -92,6 +107,29 @@ def _dataset_label(table: TableMetadata) -> str:
 def _rule_signature(common_rules: list[dict[str, Any]], business_rules: list[dict[str, Any]]) -> str:
     payload = {"common": common_rules, "business": business_rules}
     return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _rule_identity(rule: Any) -> str:
+    if isinstance(rule, dict):
+        payload = parse_quality_rule(rule).model_dump(exclude_none=True)
+    else:
+        payload = parse_quality_rule(rule).model_dump(exclude_none=True)
+    return json.dumps(payload, sort_keys=True, default=str)
+
+
+def _prepared_rule_identities() -> set[str]:
+    return {
+        _rule_identity(rule)
+        for rule in (
+            *st.session_state.get(QUALITY_COMMON_RULES_KEY, []),
+            *st.session_state.get(QUALITY_RULES_KEY, []),
+        )
+    }
+
+
+def _accepted_ai_identities(dataset_id: str) -> set[str]:
+    accepted = st.session_state.setdefault(QUALITY_AI_ACCEPTED_KEY, {})
+    return accepted.setdefault(dataset_id, set())
 
 
 def _invalidate_execution_result() -> None:
@@ -179,7 +217,7 @@ def _run_quality_checks(
     st.session_state[QUALITY_HISTORY_DATASET_KEY] = dataset_id
     st.session_state[QUALITY_REVIEW_DETAIL_CACHE_KEY] = {}
     try:
-        QualityRunRepository().save_quality_run(run_id, report)
+        QualityRunRepository().save_quality_run(run_id, report, user_id=current_user_id())
     except Exception:
         st.warning("Quality checks completed, but the run history could not be saved.")
     st.session_state[QUALITY_RUN_STATUS_KEY] = "complete"
@@ -311,7 +349,9 @@ def _table_secondary(value: Any, _row: dict[Any, Any]) -> str:
     return f'<span class="html-table-secondary">{escape(str(value))}</span>'
 
 
-def _quality_rule_label(rule_type: str) -> str:
+def _quality_rule_label(rule_type: str | None) -> str:
+    if not rule_type:
+        return "Unknown Rule"
     return {
         "not_null": "Not Null",
         "unique": "Unique",
@@ -321,6 +361,153 @@ def _quality_rule_label(rule_type: str) -> str:
         "string_length": "String Length",
         "freshness": "Freshness",
     }.get(rule_type, rule_type.replace("_", " ").title())
+
+
+def _rejection_category_label(category: str) -> str:
+    return {
+        "unsupported_rule": "Unsupported Rule",
+        "unknown_column": "Unknown Column",
+        "datatype_mismatch": "Datatype Mismatch",
+        "invalid_configuration": "Invalid Configuration",
+        "duplicate_suggestion": "Duplicate Suggestion",
+        "schema_validation_failure": "Schema Validation Failure",
+    }.get(category, category.replace("_", " ").title())
+
+
+def _ai_suggester() -> QualityRuleSuggester:
+    suggester = st.session_state.get(QUALITY_AI_SUGGESTER_KEY)
+    if not isinstance(suggester, QualityRuleSuggester):
+        suggester = QualityRuleSuggester()
+        st.session_state[QUALITY_AI_SUGGESTER_KEY] = suggester
+    return suggester
+
+
+def _format_ai_response_time(response_time_ms: float | None) -> str | None:
+    if response_time_ms is None:
+        return None
+    if response_time_ms >= 1000:
+        return f"{response_time_ms / 1000:.1f} s"
+    return f"{response_time_ms:.1f} ms"
+
+
+def _render_ai_suggestions(selected_table: TableMetadata) -> None:
+    """Render explicit, metadata-grounded AI suggestions for the selected dataset."""
+    st.markdown('<div class="section-kicker">AI RULE SUGGESTIONS</div>', unsafe_allow_html=True)
+    st.caption("Generate metadata-grounded quality-rule suggestions using the configured local AI model.")
+    st.caption("AI suggestions require human review and are not added automatically.")
+
+    dataset_id = _dataset_id(selected_table)
+    suggester = _ai_suggester()
+    existing_result = st.session_state.get(QUALITY_AI_RESULT_KEY)
+    existing_dataset = st.session_state.get(QUALITY_AI_RESULT_DATASET_KEY)
+    in_progress = st.session_state.get(QUALITY_AI_IN_PROGRESS_KEY, False)
+    has_current_result = isinstance(existing_result, AISuggestionResult) and existing_dataset == dataset_id
+    generate = st.button(
+        "Regenerate AI Suggestions" if has_current_result else "Generate AI Suggestions",
+        type="primary",
+        icon=":material/auto_awesome:",
+        key="generate-ai-suggestions",
+        disabled=not suggester.client.enabled or in_progress,
+    )
+    if generate:
+        st.session_state[QUALITY_AI_IN_PROGRESS_KEY] = True
+        try:
+            if has_current_result:
+                suggester.clear_cache()
+            documentation = MetadataDocumentationGenerator().generate(selected_table)
+            with loading_indicator("Generating AI quality suggestions..."):
+                result = suggester.suggest_for_table(documentation)
+            st.session_state[QUALITY_AI_RESULT_KEY] = result
+            st.session_state[QUALITY_AI_RESULT_DATASET_KEY] = dataset_id
+        except Exception:
+            st.session_state[QUALITY_AI_RESULT_KEY] = AISuggestionResult(
+                status="ERROR",
+                model=suggester.client.model,
+                message="AI suggestions could not be generated.",
+            )
+            st.session_state[QUALITY_AI_RESULT_DATASET_KEY] = dataset_id
+        finally:
+            st.session_state[QUALITY_AI_IN_PROGRESS_KEY] = False
+        st.rerun()
+
+    if not suggester.client.enabled:
+        st.caption("AI suggestions are currently disabled.")
+        return
+    if not isinstance(existing_result, AISuggestionResult) or existing_dataset != dataset_id:
+        return
+
+    result = existing_result
+    if result.status == "SUCCESS":
+        acceptance_notice = st.session_state.pop("quality_ai_acceptance_notice", None)
+        if acceptance_notice:
+            st.success(acceptance_notice)
+        duplicate_notice = st.session_state.pop(QUALITY_AI_DUPLICATE_NOTICE_KEY, None)
+        if duplicate_notice and duplicate_notice[0] == dataset_id:
+            st.info(duplicate_notice[1])
+        response_time = _format_ai_response_time(result.response_time_ms)
+        summary = [f"Model: {result.model}", f"Suggestions: {len(result.suggestions)}"]
+        if response_time is not None:
+            summary.append(f"Response Time: {response_time}")
+        if result.cache_hit:
+            summary.append("Cached")
+        st.caption(" · ".join(summary))
+        if result.rejected_suggestions:
+            st.caption(f"{len(result.rejected_suggestions)} additional AI suggestions were rejected by validation.")
+            with st.expander(f"Rejected by Validation ({len(result.rejected_suggestions)})", expanded=False):
+                rejected_rows = [
+                    {
+                        "Rule": _quality_rule_label(rejected.rule_type),
+                        "Column": rejected.column or "—",
+                        "Category": _rejection_category_label(rejected.category),
+                        "Reason": rejected.reason,
+                    }
+                    for rejected in result.rejected_suggestions
+                ]
+                render_html_table(
+                    rejected_rows,
+                    table_id="quality-ai-rejected-suggestions",
+                    download=False,
+                    column_widths=[20, 22, 25, 33],
+                    cell_renderers={
+                        "Rule": _table_badge,
+                        "Column": _table_identifier,
+                        "Category": _table_secondary,
+                        "Reason": _table_secondary,
+                    },
+                )
+        if not result.suggestions:
+            st.info("No AI suggestions passed validation for this dataset.")
+            return
+        rows = [
+            {
+                "Rule": _quality_rule_label(suggestion.rule.rule_type),
+                "Column": suggestion.rule.column,
+                "Reason": suggestion.reason or "No reason provided.",
+                "Action": "",
+            }
+            for index, suggestion in enumerate(result.suggestions)
+        ]
+        render_html_table(
+            rows,
+            table_id="quality-ai-suggestions",
+            download=False,
+            column_widths=[20, 25, 43, 12],
+            cell_renderers={"Rule": _table_badge, "Column": _table_identifier, "Reason": _table_secondary},
+            action={
+                "header": "Action",
+                "key_prefix": "add-ai-rule",
+                "help": "Add AI suggestion to Business Rules",
+                "label": lambda _row, suggestion_index: _ai_action_label(suggestion_index, dataset_id),
+                "disabled": lambda _row, suggestion_index: _ai_action_disabled(suggestion_index, dataset_id),
+                "callback": _add_ai_rule,
+            },
+        )
+    elif result.status == "DISABLED":
+        st.info(result.message or "AI suggestions are currently disabled.")
+    elif result.status == "UNAVAILABLE":
+        st.warning("The configured local AI model or service is unavailable.")
+    elif result.status == "ERROR":
+        st.error(result.message or "AI suggestions could not be generated.")
 
 
 def _format_quality_percent(value: float) -> str:
@@ -527,7 +714,8 @@ def _render_quality_review(selected_table: TableMetadata) -> None:
         result_rows,
         table_id="quality-results",
         download=False,
-        column_widths=[13, 14, 9, 11, 10, 10, 10, 23],
+        column_widths=[14, 18, 12, 10, 10, 12, 10, 14],
+        table_class="quality-result-table",
         cell_renderers={
             "Rule": _table_badge,
             "Column / Scope": _table_identifier,
@@ -571,6 +759,7 @@ def _render_quality_history(selected_table: TableMetadata) -> None:
             selected_table.database_name,
             selected_table.schema_name,
             selected_table.table_name,
+            user_id=current_user_id(),
         )[:QUALITY_HISTORY_LIMIT]
     except Exception:
         st.warning("Quality run history is temporarily unavailable.")
@@ -643,9 +832,52 @@ def _remove_common_rule(index: int) -> None:
 
 
 def _remove_business_rule(index: int) -> None:
-    st.session_state[QUALITY_RULES_KEY].pop(index)
+    removed_rule = st.session_state[QUALITY_RULES_KEY].pop(index)
+    dataset_id = st.session_state.get(QUALITY_DATASET_KEY)
+    if dataset_id in st.session_state.get(QUALITY_AI_ACCEPTED_KEY, {}):
+        st.session_state[QUALITY_AI_ACCEPTED_KEY][dataset_id].discard(_rule_identity(removed_rule))
     _invalidate_execution_result()
     st.rerun()
+
+
+def _add_ai_rule(index: int) -> None:
+    result = st.session_state.get(QUALITY_AI_RESULT_KEY)
+    dataset_id = st.session_state.get(QUALITY_DATASET_KEY)
+    if not isinstance(result, AISuggestionResult) or result.status != "SUCCESS" or not dataset_id:
+        return
+    if index < 0 or index >= len(result.suggestions):
+        return
+
+    rule = result.suggestions[index].rule
+    identity = _rule_identity(rule)
+    if identity in _prepared_rule_identities():
+        st.session_state[QUALITY_AI_DUPLICATE_NOTICE_KEY] = (
+            dataset_id,
+            "This rule is already included in the prepared checks.",
+        )
+        st.rerun()
+        return
+
+    st.session_state[QUALITY_RULES_KEY].append(rule.model_dump())
+    _accepted_ai_identities(dataset_id).add(identity)
+    st.session_state["quality_ai_acceptance_notice"] = "AI suggestion added to Business Rules."
+    _invalidate_execution_result()
+    st.rerun()
+
+
+def _ai_action_label(index: int, dataset_id: str) -> str:
+    result = st.session_state.get(QUALITY_AI_RESULT_KEY)
+    if not isinstance(result, AISuggestionResult) or index >= len(result.suggestions):
+        return "Add Rule"
+    identity = _rule_identity(result.suggestions[index].rule)
+    return "Added" if identity in _prepared_rule_identities() else "Add Rule"
+
+
+def _ai_action_disabled(index: int, dataset_id: str) -> bool:
+    result = st.session_state.get(QUALITY_AI_RESULT_KEY)
+    if not isinstance(result, AISuggestionResult) or index >= len(result.suggestions):
+        return True
+    return _rule_identity(result.suggestions[index].rule) in _prepared_rule_identities()
 
 
 render_page_header(
@@ -663,7 +895,7 @@ render_get_started_workflow(
 render_connected_sources_table()
 
 try:
-    all_catalog = MetadataRepository().list_tables()
+    all_catalog = MetadataRepository().list_tables(current_user_id())
 except Exception:
     st.error("Unable to load cataloged datasets.")
     st.stop()
@@ -679,10 +911,11 @@ if not has_active_connections:
     _close_business_form()
     st.session_state["quality_table"] = CHOOSE_DATASET
     render_empty_state(
-        "No datasets are currently available for quality execution.",
-        "Connect a source from Metadata Scan first.",
+        "No active connections",
+        "Connect a data source before running quality checks.",
         "quality",
     )
+    st.page_link("pages/1_connections.py", label="Manage Connections", icon=":material/database:")
     if history_table is not None:
         _render_quality_history(history_table)
     st.stop()
@@ -727,6 +960,10 @@ selected_table = table_options[selected_id]
 
 if st.session_state.get(QUALITY_DATASET_KEY) != selected_id:
     _invalidate_execution_result()
+    st.session_state.pop(QUALITY_AI_RESULT_KEY, None)
+    st.session_state.pop(QUALITY_AI_RESULT_DATASET_KEY, None)
+    st.session_state.pop(QUALITY_AI_IN_PROGRESS_KEY, None)
+    st.session_state.pop(QUALITY_AI_DUPLICATE_NOTICE_KEY, None)
     st.session_state[QUALITY_DATASET_KEY] = selected_id
     st.session_state[QUALITY_RULES_KEY] = []
     _close_business_form()
@@ -891,6 +1128,8 @@ else:
         cell_renderers={"Rule": _table_badge, "Column": _table_identifier, "Configuration": _table_secondary},
         action={"header": "Action", "icon": ":material/delete_outline:", "key_prefix": "remove-quality-rule", "help": "Remove business rule", "callback": _remove_business_rule},
     )
+
+_render_ai_suggestions(selected_table)
 
 st.markdown('<div class="section-kicker">CHECK SUMMARY</div>', unsafe_allow_html=True)
 summary_columns = st.columns(3)

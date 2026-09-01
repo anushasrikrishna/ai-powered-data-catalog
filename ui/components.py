@@ -8,6 +8,8 @@ import re
 from typing import Any, Callable
 
 from ui.icons import svg_icon
+from ui.illustrations import product_mark
+from auth.session import current_user, logout
 
 LOADER_SVG_PATH = Path(__file__).resolve().parent / "assets" / "loader.svg"
 LOADER_SVG = LOADER_SVG_PATH.read_text(encoding="utf-8")
@@ -30,29 +32,46 @@ def loading_indicator(message: str):
 
 
 def render_app_header() -> None:
-    """Render the persistent product header and the single theme control."""
+    """Render the persistent product header, theme control, and user menu."""
     dark_mode = st.session_state.get("dark_mode", False)
     next_icon = ":material/light_mode:" if dark_mode else ":material/dark_mode:"
 
     def toggle_theme() -> None:
         st.session_state["dark_mode"] = not st.session_state.get("dark_mode", False)
 
-    with st.container():
-        left, right = st.columns([4, 0.35], vertical_alignment="center")
+    with st.container(key="authenticated-header-row"):
+        left, actions = st.columns([5, 1], vertical_alignment="center")
         with left:
             st.markdown(
-                f'<div class="app-header"><div class="app-brand"><span class="brand-mark">{svg_icon("dashboard", 18)}</span>'
+                f'<div class="app-header"><div class="app-brand"><span class="brand-mark">{product_mark(19)}</span>'
                 '<div><div class="brand-name">AI-Powered Data Catalog</div><div class="brand-subtitle">Metadata &amp; Quality Assistant</div></div></div></div>',
                 unsafe_allow_html=True,
             )
-        with right:
-            st.button(
-                "",
-                icon=next_icon,
-                key="theme_mode_button",
-                on_click=toggle_theme,
-                type="tertiary",
-            )
+        with actions:
+            user = current_user()
+            username = user.username if user is not None else "Account"
+            display_name = username if len(username) <= 22 else f"{username[:19]}…"
+            with st.container(key="header-actions"):
+                account, theme = st.columns([1.35, 0.35], gap="small", vertical_alignment="center")
+                with account:
+                    with st.container(key="authenticated-account-control"):
+                        name_column, arrow_column = st.columns([4, 1], gap="small", vertical_alignment="center")
+                        with name_column:
+                            st.markdown(f'<div class="authenticated-username" title="{escape(username)}">{escape(display_name)}</div>', unsafe_allow_html=True)
+                        with arrow_column:
+                            with st.popover("", use_container_width=True):
+                                st.caption(username)
+                                if st.button("Logout", icon=":material/logout:", key="authenticated_logout"):
+                                    logout()
+                                    st.rerun()
+                with theme:
+                    st.button(
+                        "",
+                        icon=next_icon,
+                        key="theme_mode_button",
+                        on_click=toggle_theme,
+                        type="tertiary",
+                    )
 
 
 def render_app_navigation(nav_items: list[tuple[object, str, str]]) -> None:
@@ -133,6 +152,11 @@ def sanitize_table_id(table_id: str) -> str:
     return sanitized or "table"
 
 
+def resolve_table_action_value(value: Any, row: dict[Any, Any], row_index: int) -> Any:
+    """Resolve static or row-aware table action metadata for one rendered row."""
+    return value(row, row_index) if callable(value) else value
+
+
 def table_to_csv(data: Any) -> str:
     """Serialize table input to UTF-8-compatible CSV without HTML markup."""
     headers, rows = _table_records(data)
@@ -168,6 +192,7 @@ def render_html_table(
     column_widths: list[float] | None = None,
     cell_renderers: dict[str, Callable[[Any, dict[Any, Any]], str]] | None = None,
     action: dict[str, Any] | None = None,
+    table_class: str | None = None,
 ) -> None:
     """Render tabular data without Streamlit's Arrow serialization path."""
     headers, rows = _table_records(data)
@@ -195,6 +220,8 @@ def render_html_table(
             )
     visible_columns = column_keys
     visible_headers = headers
+    if column_widths is not None and len(column_widths) != len(visible_headers):
+        raise ValueError("column_widths must match the table column count")
 
     def format_value(value: Any) -> str:
         return "—" if value is None else escape(str(value))
@@ -313,7 +340,12 @@ def render_html_table(
                                 }
                                 if action_item.get("icon"):
                                     action_button_kwargs["icon"] = str(action_item["icon"])
-                                action_button_label = str(action_item.get("label", ""))
+                                action_button_label = str(
+                                    resolve_table_action_value(action_item.get("label", ""), row, index)
+                                )
+                                disabled = resolve_table_action_value(action_item.get("disabled", False), row, index)
+                                if disabled:
+                                    action_button_kwargs["disabled"] = True
                                 if action_button_label:
                                     with st.container(key=f'html-table-action-{safe_table_id}-{index}-{action_item["key_prefix"]}'):
                                         clicked = st.button(action_button_label, **action_button_kwargs)
@@ -324,15 +356,19 @@ def render_html_table(
         return
 
     table_kind = "catalog" if headers == ["Source", "Database", "Schema", "Table", "Type", "Rows", "Columns"] else "metadata"
+    table_width_class = f" {sanitize_table_id(table_class)}" if table_class else ""
+    def width_attribute(index: int) -> str:
+        return f' style="width:{column_widths[index]}%"' if column_widths is not None else ""
+
     header_html = "".join(
-        f"<th class='html-table-cell {cell_class(header)}' scope='col'>{escape(header)}</th>"
-        for header in visible_headers
+        f"<th class='html-table-cell {cell_class(header)}' scope='col'{width_attribute(index)}>{escape(header)}</th>"
+        for index, header in enumerate(visible_headers)
     )
     body_html = "".join(
         "<tr>"
         + "".join(
-            f"<td class='html-table-cell {cell_class(header)}{' html-table-cell--special' if cell_renderers and header in cell_renderers else ''}'>{formatted_cell(header, row.get(key), row)}</td>"
-            for key, header in zip(visible_columns, visible_headers)
+            f"<td class='html-table-cell {cell_class(header)}{' html-table-cell--special' if cell_renderers and header in cell_renderers else ''}'{width_attribute(index)}>{formatted_cell(header, row.get(key), row)}</td>"
+            for index, (key, header) in enumerate(zip(visible_columns, visible_headers))
         )
         + "</tr>"
         for row in rows
@@ -346,7 +382,7 @@ def render_html_table(
         return
     assert table_shell is not None
     table_shell.markdown(
-        f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}"><thead><tr>{header_html}</tr></thead>'
+        f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}{table_width_class}"><thead><tr>{header_html}</tr></thead>'
         f"<tbody>{body_html}</tbody></table></div></div>",
         unsafe_allow_html=True,
     )
@@ -378,26 +414,26 @@ def render_count_chips(
 
 
 def render_stepper(steps: list[str]) -> None:
-    parts = ['<div class="stepper">']
-    for index, label in enumerate(steps):
-        parts.append(f'<div class="step"><span class="step-number">{index + 1}</span><span>{label}</span></div>')
+    render_process_stepper([("catalog", label) for label in steps])
+
+
+def render_process_stepper(steps: list[tuple[str, str]], class_name: str = "process-stepper") -> None:
+    """Render the shared non-interactive process journey used across pages."""
+    parts = [f'<div class="{escape(class_name)}">']
+    for index, (icon, label) in enumerate(steps):
+        parts.append(
+            f'<div class="process-step"><div class="process-step-number">{index + 1:02d}</div>'
+            f'<div class="process-step-node">{svg_icon(icon, 18)}</div>'
+            f'<div class="process-step-label">{escape(label)}</div></div>'
+        )
         if index < len(steps) - 1:
-            parts.append('<span class="step-connector"></span>')
+            parts.append('<div class="process-step-connector" aria-hidden="true"><span></span></div>')
     parts.append('</div>')
     st.markdown("".join(parts), unsafe_allow_html=True)
 
 
 def render_get_started_workflow(steps: list[tuple[str, str]], class_name: str = "get-started-workflow") -> None:
-    parts = [f'<div class="{class_name}">']
-    for index, (icon, title) in enumerate(steps):
-        parts.append(
-            f'<div class="workflow-item"><div class="workflow-number">{index + 1:02d}</div>'
-            f'<div class="workflow-icon">{svg_icon(icon, 19)}</div><div class="workflow-title">{title}</div></div>'
-        )
-        if index < len(steps) - 1:
-            parts.append('<div class="workflow-connector">→</div>')
-    parts.append('</div>')
-    st.markdown("".join(parts), unsafe_allow_html=True)
+    render_process_stepper(steps, class_name=f"{class_name} process-stepper")
 
 
 def render_quick_access_card(icon: str, title: str, description: str, callback, page_path: str) -> None:
