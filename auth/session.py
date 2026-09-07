@@ -11,6 +11,7 @@ AUTHENTICATED_KEY = "authenticated"
 CURRENT_USER_KEY = "current_user"
 AUTH_OVERVIEW_PAGE_KEY = "auth_overview_page"
 AUTH_LOGIN_PAGE_KEY = "auth_login_page"
+PAGE_STATE_PREFIXES = ("connections_", "metadata_", "catalog_", "quality_", "reports_", "ai_")
 
 
 def initialize_auth_state() -> None:
@@ -67,7 +68,9 @@ def logout() -> None:
     for key in list(st.session_state.keys()):
         if key in {"dark_mode", AUTHENTICATED_KEY, CURRENT_USER_KEY}:
             continue
-        if any(token in str(key).casefold() for token in ("quality", "ai", "report", "connector", "connection", "scan", "catalog_selected", "pending_page", "auth_reset")):
+        lowered_key = str(key).casefold()
+        page_state_key = lowered_key.lstrip("_")
+        if page_state_key.startswith(PAGE_STATE_PREFIXES) or any(token in lowered_key for token in ("quality", "ai", "report", "connector", "connection", "scan", "catalog_selected", "pending_page", "auth_reset")):
             st.session_state.pop(key, None)
     st.session_state[AUTHENTICATED_KEY] = False
     st.session_state.pop(CURRENT_USER_KEY, None)
@@ -88,4 +91,4 @@ def require_authenticated() -> None:
         st.stop()
 
 
-__all__ = ["AUTHENTICATED_KEY", "AUTH_LOGIN_PAGE_KEY", "AUTH_OVERVIEW_PAGE_KEY", "CURRENT_USER_KEY", "current_user", "current_user_id", "initialize_auth_state", "is_authenticated", "logout", "redirect_to_login", "redirect_to_overview", "register_auth_pages", "require_authenticated", "sign_in"]
+__all__ = ["AUTHENTICATED_KEY", "AUTH_LOGIN_PAGE_KEY", "AUTH_OVERVIEW_PAGE_KEY", "CURRENT_USER_KEY", "PAGE_STATE_PREFIXES", "current_user", "current_user_id", "initialize_auth_state", "is_authenticated", "logout", "redirect_to_login", "redirect_to_overview", "register_auth_pages", "require_authenticated", "sign_in"]

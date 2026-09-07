@@ -120,7 +120,8 @@ def home_page() -> None:
                 "Discoverable datasets",
             ),
             ("quality", "Quality Score", latest_score, "Overall data quality"),
-        ]
+        ],
+        decorations=["data-nodes", "data-grid", "quality-signal"],
     )
 
     st.markdown('<div class="section-kicker">GET STARTED</div>', unsafe_allow_html=True)
@@ -144,7 +145,14 @@ def home_page() -> None:
     quick_columns = st.columns(3)
     for column, (icon, title, description, page_path) in zip(quick_columns, quick_access):
         with column:
-            render_quick_access_card(icon, title, description, request_page, page_path)
+            render_quick_access_card(
+                icon,
+                title,
+                description,
+                request_page,
+                page_path,
+                decoration={"Metadata Scan": "data-nodes", "Data Catalog": "data-grid", "Data Quality": "quality-signal"}[title],
+            )
 
 
 overview_page = st.Page(home_page, title="Overview", icon=":material/dashboard:", default=True)

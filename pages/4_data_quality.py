@@ -586,7 +586,7 @@ def _render_quality_result_detail(selected_table: TableMetadata, result: Quality
                 for label, value in rule_items
             )
             st.markdown(
-                f'<div class="quality-detail-panel"><div class="quality-detail-panel-title">RULE DETAILS</div>{rule_html}</div>',
+                f'<div class="quality-detail-panel card-decoration-data-grid"><div class="card-content"><div class="quality-detail-panel-title">RULE DETAILS</div>{rule_html}</div></div>',
                 unsafe_allow_html=True,
             )
         with detail_columns[1]:
@@ -597,7 +597,7 @@ def _render_quality_result_detail(selected_table: TableMetadata, result: Quality
                 for label, value in summary_items
             )
             st.markdown(
-                f'<div class="quality-detail-panel"><div class="quality-detail-panel-title">{"FAILURE SUMMARY" if result.status == "FAIL" else "ERROR SUMMARY"}</div>{summary_html}</div>',
+                f'<div class="quality-detail-panel card-decoration-quality-signal"><div class="card-content"><div class="quality-detail-panel-title">{"FAILURE SUMMARY" if result.status == "FAIL" else "ERROR SUMMARY"}</div>{summary_html}</div></div>',
                 unsafe_allow_html=True,
             )
     if result.status != "FAIL":
@@ -659,11 +659,19 @@ def _render_quality_review(selected_table: TableMetadata) -> None:
         ("Total Checks", f"{report.total_rules:,}", "All executed rule results"),
     ]
     summary_columns = st.columns(len(summary_cards))
+    result_decorations = {
+        "Quality Score": "quality-signal",
+        "Passed Checks": "verified-path",
+        "Failed Checks": "broken-path",
+        "Error Checks": "signal-path",
+        "Total Checks": "check-grid",
+    }
     for column, (label, value, detail) in zip(summary_columns, summary_cards):
         with column:
+            decoration = result_decorations[label]
             st.markdown(
-                f'<div class="metric-card"><div class="metric-value">{escape(value)}</div>'
-                f'<div class="metric-label">{escape(label)}</div><div class="metric-detail">{escape(detail)}</div></div>',
+                f'<div class="metric-card card-decoration-{decoration}"><div class="card-content"><div class="metric-value">{escape(value)}</div>'
+                f'<div class="metric-label">{escape(label)}</div><div class="metric-detail">{escape(detail)}</div></div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -678,9 +686,9 @@ def _render_quality_review(selected_table: TableMetadata) -> None:
         visual_columns = st.columns(2, gap="large")
         with visual_columns[0]:
             st.markdown(
-                f'<div class="quality-visual-panel"><div class="quality-visual-title">OVERALL QUALITY</div>'
+                f'<div class="quality-visual-panel card-decoration-quality-signal"><div class="card-content"><div class="quality-visual-title">OVERALL QUALITY</div>'
                 f'<div class="quality-visual-score">{escape("—" if report.quality_score is None else _format_quality_percent(report.quality_score))}</div>'
-                f'<div class="quality-progress-track"><div class="quality-progress-fill" style="width:{score_value:.2f}%"></div></div></div>',
+                f'<div class="quality-progress-track"><div class="quality-progress-fill" style="width:{score_value:.2f}%"></div></div></div></div>',
                 unsafe_allow_html=True,
             )
         with visual_columns[1]:
@@ -691,7 +699,7 @@ def _render_quality_review(selected_table: TableMetadata) -> None:
                 for label, count, kind in status_bars
             )
             st.markdown(
-                f'<div class="quality-visual-panel"><div class="quality-visual-title">RULE STATUS DISTRIBUTION</div>{bars_html}</div>',
+                f'<div class="quality-visual-panel card-decoration-quality-signal"><div class="card-content"><div class="quality-visual-title">RULE STATUS DISTRIBUTION</div>{bars_html}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -777,6 +785,7 @@ def _render_quality_history(selected_table: TableMetadata) -> None:
                 st.markdown('<div class="quality-history-panel-title">QUALITY SCORE TREND</div>', unsafe_allow_html=True)
                 if len(scored_runs) < 2:
                     st.info("Run quality checks again to build a quality trend.")
+                    st.markdown('<div class="quality-empty-trend-art" aria-hidden="true"></div>', unsafe_allow_html=True)
                 else:
                     trend_svg = build_quality_trend_svg(
                         [(_history_timestamp(run.executed_at), run.report.quality_score) for run in scored_runs]
@@ -801,7 +810,7 @@ def _render_quality_history(selected_table: TableMetadata) -> None:
                 for label, value in latest_items
             )
             st.markdown(
-                f'<div class="quality-history-latest"><div class="quality-history-panel-title">LATEST RUN</div>{latest_html}</div>',
+                f'<div class="quality-history-latest card-decoration-quality-signal"><div class="card-content"><div class="quality-history-panel-title">LATEST RUN</div>{latest_html}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -938,8 +947,11 @@ if not catalog:
 st.markdown('<div class="section-kicker">SELECT DATASET</div>', unsafe_allow_html=True)
 table_options = {_dataset_id(table): table for table in catalog}
 table_ids = [CHOOSE_DATASET] + list(table_options)
+restored_quality_dataset = st.session_state.get(QUALITY_DATASET_KEY)
 if st.session_state.get("quality_table") not in table_ids:
-    st.session_state["quality_table"] = CHOOSE_DATASET
+    st.session_state["quality_table"] = (
+        restored_quality_dataset if restored_quality_dataset in table_options else CHOOSE_DATASET
+    )
 selected_id = st.selectbox(
     "Dataset",
     table_ids,
@@ -995,7 +1007,15 @@ context_values = [
 ]
 for column, (label, value) in zip(context_columns, context_values):
     with column:
-        st.markdown(f'<div class="quality-context-item"><span>{label}</span><strong>{value}</strong></div>', unsafe_allow_html=True)
+        decoration = {
+            "Source": "data-nodes",
+            "Database": "data-grid",
+            "Schema": "data-grid",
+            "Table": "data-nodes",
+            "Rows": "data-grid",
+            "Columns": "data-nodes",
+        }[label]
+        st.markdown(f'<div class="quality-context-item card-decoration-{decoration}"><div class="card-content"><span>{label}</span><strong>{value}</strong></div></div>', unsafe_allow_html=True)
 
 common_rules = st.session_state[QUALITY_COMMON_RULES_KEY]
 st.markdown('<div class="section-kicker">COMMON CHECKS</div>', unsafe_allow_html=True)
@@ -1135,7 +1155,8 @@ st.markdown('<div class="section-kicker">CHECK SUMMARY</div>', unsafe_allow_html
 summary_columns = st.columns(3)
 for column, (label, value) in zip(summary_columns, [("Common Checks", len(common_rules)), ("Business Rules", len(business_rules)), ("Total Checks", len(common_rules) + len(business_rules))]):
     with column:
-        st.markdown(f'<div class="quality-count-item"><span>{label}</span><strong>{value}</strong></div>', unsafe_allow_html=True)
+        decoration = {"Common Checks": "quality-signal", "Business Rules": "data-nodes", "Total Checks": "data-grid"}[label]
+        st.markdown(f'<div class="quality-count-item card-decoration-{decoration}"><div class="card-content"><span>{label}</span><strong>{value}</strong></div></div>', unsafe_allow_html=True)
 
 with st.container(key="quality-run-quality-checks"):
     run_quality_checks = st.button(

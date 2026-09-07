@@ -12,11 +12,21 @@ from connectors.snowflake_connector import SnowflakeConnector
 from connectors.sqlserver_connector import SQLServerConnector
 from core.connection_registry import ConnectionEntry, connection_id_for, get_connection_registry
 from ui.components import loading_indicator, render_empty_state, render_html_table
+from ui.page_state import load_widget_state, store_widget_state
 
 
 SOURCE_OPTIONS = ("SQL Server", "PostgreSQL", "Snowflake")
 CHOOSE_SCHEMA = "Choose a schema"
 CHOOSE_TABLE = "Choose a table"
+METADATA_DATABASE_KEY = "metadata_database"
+METADATA_SCHEMA_KEY = "metadata_schema"
+METADATA_TABLE_KEY = "metadata_table"
+METADATA_CONNECTION_KEY = "metadata_connection"
+METADATA_DATABASE_WIDGET_KEY = "_metadata_database_widget"
+METADATA_SCHEMA_WIDGET_KEY = "_metadata_schema_widget"
+METADATA_TABLE_WIDGET_KEY = "_metadata_table_widget"
+METADATA_LAST_DATABASE_KEY = "metadata_last_database"
+METADATA_LAST_SCHEMA_KEY = "metadata_last_schema"
 
 CONNECTOR_STATE_KEY = "connections_connector"
 ACTIVE_CONNECTION_ID_KEY = "connections_active_connection_id"
@@ -135,13 +145,13 @@ def render_connections_table() -> None:
         st.caption("No active source connections in this session.")
         return
     action_items = [
-        {"label": "Disconnect", "key_prefix": "disconnect-connection", "help": "Disconnect", "callback": _disconnect_connection},
+        {"label": "", "icon": ":material/link_off:", "key_prefix": "disconnect-connection", "help": "Disconnect", "callback": _disconnect_connection},
     ]
     render_html_table(
         rows,
         table_id="session-connections",
         download=False,
-        column_widths=[19, 21, 27, 17, 16],
+        column_widths=[20, 22, 30, 16, 12],
         cell_renderers={"Status": _connection_status_cell},
         action={"header": "Action", "actions": action_items},
     )
@@ -177,7 +187,7 @@ def render_connected_metadata_selection(extra_clear_keys: tuple[str, ...] = ()) 
     registry = get_connection_registry()
     entries = [entry for entry in registry.entries() if entry.connected]
     if not entries:
-        render_empty_state("No active connections", "Connect a data source before scanning metadata.", "database")
+        render_empty_state("No active connections", "Connect a data source before scanning metadata.", "database", decoration="data-nodes")
         st.page_link("pages/1_connections.py", label="Manage Connections", icon=":material/database:")
         return None
 
@@ -187,9 +197,27 @@ def render_connected_metadata_selection(extra_clear_keys: tuple[str, ...] = ()) 
         option = f"{source_display_name(entry.source_type)} / {entry.database_name}"
         database_options.append(option)
         entry_by_option[option] = entry
-    if st.session_state.get("metadata_database_selection") not in database_options:
-        st.session_state["metadata_database_selection"] = database_options[0]
-    selected_database = st.selectbox("Database", database_options, key="metadata_database_selection")
+    load_widget_state(
+        st.session_state,
+        METADATA_DATABASE_KEY,
+        METADATA_DATABASE_WIDGET_KEY,
+        database_options[0],
+        database_options,
+    )
+    selected_database = st.selectbox(
+        "Database",
+        database_options,
+        key=METADATA_DATABASE_WIDGET_KEY,
+        on_change=store_widget_state,
+        args=(st.session_state, METADATA_DATABASE_KEY, METADATA_DATABASE_WIDGET_KEY),
+    )
+    previous_database = st.session_state.get(METADATA_LAST_DATABASE_KEY)
+    if previous_database is not None and selected_database != previous_database:
+        for key in (METADATA_SCHEMA_KEY, METADATA_TABLE_KEY, METADATA_SCHEMA_WIDGET_KEY, METADATA_TABLE_WIDGET_KEY):
+            st.session_state.pop(key, None)
+        clear_keys(extra_clear_keys)
+        clear_preview()
+    st.session_state[METADATA_LAST_DATABASE_KEY] = selected_database
     if selected_database == database_options[0]:
         clear_keys(extra_clear_keys)
         clear_preview()
@@ -199,36 +227,88 @@ def render_connected_metadata_selection(extra_clear_keys: tuple[str, ...] = ()) 
     connection_id = entry.connection_id
     if st.session_state.get("metadata_selected_connection") != connection_id:
         st.session_state["metadata_selected_connection"] = connection_id
-        st.session_state.pop("metadata_selected_schema", None)
-        st.session_state.pop("metadata_selected_table", None)
+        st.session_state[METADATA_CONNECTION_KEY] = connection_id
+        for key in (METADATA_SCHEMA_KEY, METADATA_TABLE_KEY, METADATA_SCHEMA_WIDGET_KEY, METADATA_TABLE_WIDGET_KEY):
+            st.session_state.pop(key, None)
         clear_keys(extra_clear_keys)
         clear_preview()
-    try:
-        schemas = entry.connector.list_schemas(entry.database_name)
-    except ConnectorError as exc:
-        st.error(safe_connection_error(str(exc)))
-        return None
-    except Exception:
-        st.error("Schemas could not be loaded. Verify the selected database and permissions.")
-        return None
+    schemas = (
+        st.session_state.get(SCHEMAS_STATE_KEY)
+        if st.session_state.get(SCHEMAS_CONNECTION_KEY) == connection_id
+        else None
+    )
+    if schemas is None:
+        try:
+            schemas = entry.connector.list_schemas(entry.database_name)
+            st.session_state[SCHEMAS_STATE_KEY] = list(schemas or [])
+            st.session_state[SCHEMAS_CONNECTION_KEY] = connection_id
+            schemas = st.session_state[SCHEMAS_STATE_KEY]
+        except ConnectorError as exc:
+            st.error(safe_connection_error(str(exc)))
+            return None
+        except Exception:
+            st.error("Schemas could not be loaded. Verify the selected database and permissions.")
+            return None
     schema_options = ["Choose a schema"] + list(schemas or [])
-    if st.session_state.get("metadata_selected_schema") not in schema_options:
-        st.session_state["metadata_selected_schema"] = schema_options[0]
-    selected_schema = st.selectbox("Schema", schema_options, key="metadata_selected_schema")
+    load_widget_state(
+        st.session_state,
+        METADATA_SCHEMA_KEY,
+        METADATA_SCHEMA_WIDGET_KEY,
+        schema_options[0],
+        schema_options,
+    )
+    selected_schema = st.selectbox(
+        "Schema",
+        schema_options,
+        key=METADATA_SCHEMA_WIDGET_KEY,
+        on_change=store_widget_state,
+        args=(st.session_state, METADATA_SCHEMA_KEY, METADATA_SCHEMA_WIDGET_KEY),
+    )
+    previous_schema = st.session_state.get(METADATA_LAST_SCHEMA_KEY)
+    if previous_schema is not None and selected_schema != previous_schema:
+        for key in (METADATA_TABLE_KEY, METADATA_TABLE_WIDGET_KEY):
+            st.session_state.pop(key, None)
+        clear_keys(extra_clear_keys)
+        clear_preview()
+    st.session_state[METADATA_LAST_SCHEMA_KEY] = selected_schema
     if selected_schema == schema_options[0]:
         return None
-    try:
-        tables = entry.connector.list_tables(selected_schema)
-    except ConnectorError as exc:
-        st.error(safe_connection_error(str(exc)))
-        return None
-    except Exception:
-        st.error("Tables could not be loaded. Verify the selected schema and permissions.")
-        return None
+    tables = (
+        st.session_state.get(TABLES_STATE_KEY)
+        if (
+            st.session_state.get(TABLES_CONNECTION_KEY) == connection_id
+            and st.session_state.get(TABLES_SCHEMA_STATE_KEY) == selected_schema
+        )
+        else None
+    )
+    if tables is None:
+        try:
+            tables = entry.connector.list_tables(selected_schema)
+            st.session_state[TABLES_STATE_KEY] = list(tables or [])
+            st.session_state[TABLES_SCHEMA_STATE_KEY] = selected_schema
+            st.session_state[TABLES_CONNECTION_KEY] = connection_id
+            tables = st.session_state[TABLES_STATE_KEY]
+        except ConnectorError as exc:
+            st.error(safe_connection_error(str(exc)))
+            return None
+        except Exception:
+            st.error("Tables could not be loaded. Verify the selected schema and permissions.")
+            return None
     table_options = ["Choose a table"] + list(tables or [])
-    if st.session_state.get("metadata_selected_table") not in table_options:
-        st.session_state["metadata_selected_table"] = table_options[0]
-    selected_table = st.selectbox("Table", table_options, key="metadata_selected_table")
+    load_widget_state(
+        st.session_state,
+        METADATA_TABLE_KEY,
+        METADATA_TABLE_WIDGET_KEY,
+        table_options[0],
+        table_options,
+    )
+    selected_table = st.selectbox(
+        "Table",
+        table_options,
+        key=METADATA_TABLE_WIDGET_KEY,
+        on_change=store_widget_state,
+        args=(st.session_state, METADATA_TABLE_KEY, METADATA_TABLE_WIDGET_KEY),
+    )
     if selected_table == table_options[0]:
         return None
     return ConnectionWorkflowSelection(

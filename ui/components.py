@@ -40,7 +40,7 @@ def render_app_header() -> None:
         st.session_state["dark_mode"] = not st.session_state.get("dark_mode", False)
 
     with st.container(key="authenticated-header-row"):
-        left, actions = st.columns([5, 1], vertical_alignment="center")
+        left, actions = st.columns([3, 1], vertical_alignment="center")
         with left:
             st.markdown(
                 f'<div class="app-header"><div class="app-brand"><span class="brand-mark">{product_mark(19)}</span>'
@@ -97,9 +97,10 @@ def render_page_header(title: str, subtitle: str, description: str, icon: str | 
     )
 
 
-def render_metric_card(value: str, label: str, detail: str) -> None:
+def render_metric_card(value: str, label: str, detail: str, decoration: str | None = None) -> None:
+    decoration_class = f" card-decoration-{decoration}" if decoration else ""
     st.markdown(
-        f'<div class="metric-card"><div class="metric-value">{value}</div><div class="metric-label">{label}</div><div class="metric-detail">{detail}</div></div>',
+        f'<div class="metric-card{decoration_class}"><div class="card-content"><div class="metric-value">{value}</div><div class="metric-label">{label}</div><div class="metric-detail">{detail}</div></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -108,6 +109,7 @@ def render_workspace_status(
     cards: list[tuple[str, str, str, str]],
     compact: bool = False,
     show_detail: bool = True,
+    decorations: list[str | None] | None = None,
 ) -> None:
     columns = st.columns(len(cards))
     card_classes = ["status-card"]
@@ -116,21 +118,24 @@ def render_workspace_status(
     if not show_detail:
         card_classes.append("status-card--no-detail")
     card_class = " ".join(card_classes)
-    for column, (icon, label, value, detail) in zip(columns, cards):
+    for index, (column, (icon, label, value, detail)) in enumerate(zip(columns, cards)):
         with column:
+            decoration = decorations[index] if decorations and index < len(decorations) else None
+            decoration_class = f" card-decoration-{decoration}" if decoration else ""
             detail_html = f'<div class="status-detail">{detail}</div>'
             st.markdown(
-                f'<div class="{card_class}"><div class="status-heading"><div class="status-icon">{svg_icon(icon, 18)}</div>'
+                f'<div class="{card_class}{decoration_class}"><div class="card-content"><div class="status-heading"><div class="status-icon">{svg_icon(icon, 18)}</div>'
                 f'<div class="status-label">{label}</div></div><div class="status-value">{value}</div>'
-                f'{detail_html if show_detail else ""}</div>',
+                f'{detail_html if show_detail else ""}</div></div>',
                 unsafe_allow_html=True,
             )
 
 
-def render_feature_card(icon: str, title: str, description: str, badge: str | None = None) -> None:
+def render_feature_card(icon: str, title: str, description: str, badge: str | None = None, decoration: str | None = None) -> None:
     badge_html = f'<div class="badge">{badge}</div>' if badge else ""
+    decoration_class = f" card-decoration-{decoration}" if decoration else ""
     st.markdown(
-        f'<div class="feature-card"><div class="card-icon">{svg_icon(icon, 24)}</div><div class="card-title">{title}</div><div class="card-description">{description}</div>{badge_html}</div>',
+        f'<div class="feature-card{decoration_class}"><div class="card-content"><div class="card-icon">{svg_icon(icon, 24)}</div><div class="card-title">{title}</div><div class="card-description">{description}</div>{badge_html}</div></div>',
         unsafe_allow_html=True,
     )
 
@@ -139,9 +144,10 @@ def render_source_card(name: str, description: str) -> None:
     render_feature_card("database", name, description, "Not configured")
 
 
-def render_empty_state(title: str, description: str, icon: str = "search") -> None:
+def render_empty_state(title: str, description: str, icon: str = "search", decoration: str | None = None) -> None:
+    decoration_class = f" card-decoration-{decoration}" if decoration else ""
     st.markdown(
-        f'<div class="empty-state"><div class="empty-icon">{svg_icon(icon, 28)}</div><div class="empty-title">{title}</div><div class="empty-description">{description}</div></div>',
+        f'<div class="empty-state{decoration_class}"><div class="card-content"><div class="empty-icon">{svg_icon(icon, 28)}</div><div class="empty-title">{title}</div><div class="empty-description">{description}</div></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -346,11 +352,8 @@ def render_html_table(
                                 disabled = resolve_table_action_value(action_item.get("disabled", False), row, index)
                                 if disabled:
                                     action_button_kwargs["disabled"] = True
-                                if action_button_label:
-                                    with st.container(key=f'html-table-action-{safe_table_id}-{index}-{action_item["key_prefix"]}'):
-                                        clicked = st.button(action_button_label, **action_button_kwargs)
-                                else:
-                                    clicked = st.button("", **action_button_kwargs)
+                                with st.container(key=f'html-table-action-{safe_table_id}-{index}-{action_item["key_prefix"]}'):
+                                    clicked = st.button(action_button_label, **action_button_kwargs)
                                 if clicked:
                                     action_item["callback"](index)
         return
@@ -394,12 +397,14 @@ def render_count_chips(
     description: str | None = None,
     kind: str = "default",
     footer: str | None = None,
+    decoration: str | None = None,
 ) -> None:
     """Render compact labeled counts for deterministic documentation summaries."""
     if not items:
         return
     description_html = f'<div class="documentation-count-description">{escape(description)}</div>' if description else ""
     footer_html = f'<div class="documentation-count-footer">{escape(footer)}</div>' if footer else ""
+    decoration_class = f" card-decoration-{decoration}" if decoration else ""
     chips = "".join(
         f'<span class="documentation-count-item documentation-count-item--{escape(kind)}">'
         f'<span class="documentation-count-label">{escape(label)}</span>'
@@ -407,7 +412,7 @@ def render_count_chips(
         for label, count in items
     )
     st.markdown(
-        f'<div class="documentation-count-breakdown documentation-count-breakdown--{escape(kind)}">'
+        f'<div class="documentation-count-breakdown documentation-count-breakdown--{escape(kind)}{decoration_class}">'
         f'<div class="documentation-count-title">{escape(title)}</div>{description_html}{chips}{footer_html}</div>',
         unsafe_allow_html=True,
     )
@@ -436,11 +441,12 @@ def render_get_started_workflow(steps: list[tuple[str, str]], class_name: str = 
     render_process_stepper(steps, class_name=f"{class_name} process-stepper")
 
 
-def render_quick_access_card(icon: str, title: str, description: str, callback, page_path: str) -> None:
+def render_quick_access_card(icon: str, title: str, description: str, callback, page_path: str, decoration: str | None = None) -> None:
+    decoration_class = f" card-decoration-{decoration}" if decoration else ""
     with st.container(key=f"quick-card-{sanitize_table_id(title)}"):
         st.markdown(
-            f'<div class="quick-card"><div class="quick-card-content"><div class="quick-icon">{svg_icon(icon, 20)}</div>'
-            f'<div><div class="quick-title">{title}</div><div class="quick-description">{description}</div></div></div></div>',
+            f'<div class="quick-card{decoration_class}"><div class="card-content"><div class="quick-card-content"><div class="quick-icon">{svg_icon(icon, 20)}</div>'
+            f'<div><div class="quick-title">{title}</div><div class="quick-description">{description}</div></div></div></div></div>',
             unsafe_allow_html=True,
         )
         st.page_link(page_path, label="Open", icon=":material/arrow_forward:")

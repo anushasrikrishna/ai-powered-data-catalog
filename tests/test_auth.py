@@ -103,6 +103,8 @@ class TestAuthenticationFoundation(unittest.TestCase):
             "connection_registry": object(),
             "quality_rules": [],
             "ai_suggestions": [],
+            "catalog_search_query": "secret search",
+            "catalog_source_filter": "SQL Server",
             "reports_selected_run": "run-1",
             "dark_mode": True,
         }
@@ -116,6 +118,8 @@ class TestAuthenticationFoundation(unittest.TestCase):
         self.assertNotIn("current_user", state)
         self.assertNotIn("quality_rules", state)
         self.assertNotIn("ai_suggestions", state)
+        self.assertNotIn("catalog_search_query", state)
+        self.assertNotIn("catalog_source_filter", state)
         self.assertNotIn("reports_selected_run", state)
         self.assertTrue(state["dark_mode"])
 
