@@ -19,6 +19,7 @@ from ui.components import (
     render_page_header,
     render_workspace_status,
 )
+from ui.page_state import load_widget_state, store_widget_state
 
 
 require_authenticated()
@@ -28,6 +29,20 @@ ALL_SOURCES = "All Sources"
 ALL_DATABASES = "All Databases"
 ALL_SCHEMAS = "All Schemas"
 CHOOSE_DATASET = "Choose a dataset"
+CATALOG_SELECTED_DATASET_KEY = "catalog_selected_dataset"
+CATALOG_DETAIL_KEY = "catalog_selected_dataset_detail"
+CATALOG_SEARCH_KEY = "catalog_search"
+CATALOG_SOURCE_KEY = "catalog_source"
+CATALOG_DATABASE_KEY = "catalog_database"
+CATALOG_SCHEMA_KEY = "catalog_schema"
+CATALOG_SEARCH_WIDGET_KEY = "_catalog_search_widget"
+CATALOG_SOURCE_WIDGET_KEY = "_catalog_source_widget"
+CATALOG_DATABASE_WIDGET_KEY = "_catalog_database_widget"
+CATALOG_SCHEMA_WIDGET_KEY = "_catalog_schema_widget"
+CATALOG_DATASET_WIDGET_KEY = "_catalog_dataset_widget"
+CATALOG_LAST_SOURCE_KEY = "catalog_last_source"
+CATALOG_LAST_DATABASE_KEY = "catalog_last_database"
+CATALOG_LAST_SCHEMA_KEY = "catalog_last_schema"
 
 SOURCE_DISPLAY_NAME_BY_TYPE = {
     "sqlserver": "SQL Server",
@@ -104,10 +119,15 @@ def _build_catalog_search(
     return CatalogSearch(repository), metadata_by_dataset_id
 
 
-def _selectbox_with_reset(label: str, options: list[str], key: str) -> str:
-    if st.session_state.get(key) not in options:
-        st.session_state[key] = options[0]
-    return st.selectbox(label, options, key=key)
+def _selectbox_with_persistence(label: str, options: list[str], permanent_key: str, widget_key: str) -> str:
+    load_widget_state(st.session_state, permanent_key, widget_key, options[0], options)
+    return st.selectbox(
+        label,
+        options,
+        key=widget_key,
+        on_change=store_widget_state,
+        args=(st.session_state, permanent_key, widget_key),
+    )
 
 
 def _render_catalog_summary(catalog: list[TableMetadata]) -> None:
@@ -125,6 +145,7 @@ def _render_catalog_summary(catalog: list[TableMetadata]) -> None:
             ],
             compact=True,
             show_detail=False,
+            decorations=["data-grid", "data-nodes", "data-nodes", "data-grid"],
         )
 
 
@@ -189,6 +210,7 @@ def _render_documentation_summary(documentation: TableDocumentation) -> None:
             ("search", "Nullable", f"{summary.nullable_column_count:,}", "Allow null values"),
             ("quality", "Non-Nullable", f"{summary.non_nullable_column_count:,}", "Required fields"),
         ],
+        decorations=["data-grid", "data-grid", "data-nodes", "quality-signal"],
     )
 
     st.markdown('<div class="documentation-summary-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
@@ -205,7 +227,7 @@ def _render_documentation_summary(documentation: TableDocumentation) -> None:
     meaningful_counts = [(label, count) for label, count in type_counts if count]
     distribution_column, classification_column = st.columns(2, gap="large")
     with distribution_column:
-        render_count_chips("DATA TYPE DISTRIBUTION", meaningful_counts, footer="Column types across this dataset")
+        render_count_chips("DATA TYPE DISTRIBUTION", meaningful_counts, footer="Column types across this dataset", decoration="data-grid")
 
     category_order = [
         "Identifier",
@@ -229,6 +251,7 @@ def _render_documentation_summary(documentation: TableDocumentation) -> None:
             [(category, category_counts[category]) for category in category_order if category_counts[category]],
             kind="category",
             footer="Detected column categories",
+            decoration="data-nodes",
         )
 
 
@@ -336,22 +359,43 @@ with st.container(key="catalog-filter-row"):
     search_column, source_column, database_column, schema_column = st.columns([2, 1, 1, 1], gap="medium")
 
     with search_column:
+        load_widget_state(st.session_state, CATALOG_SEARCH_KEY, CATALOG_SEARCH_WIDGET_KEY, "")
         search_query = st.text_input(
             "Search catalog",
             placeholder="Search by source, database, schema, table or column",
-            key="catalog_search_query",
+            key=CATALOG_SEARCH_WIDGET_KEY,
+            on_change=store_widget_state,
+            args=(st.session_state, CATALOG_SEARCH_KEY, CATALOG_SEARCH_WIDGET_KEY),
         ).strip()
 
     source_options = [ALL_SOURCES] + sorted({_source_display_name(table.source_type) for table in catalog})
     with source_column:
-        selected_source = _selectbox_with_reset("Source", source_options, "catalog_source_filter")
+        selected_source = _selectbox_with_persistence("Source", source_options, CATALOG_SOURCE_KEY, CATALOG_SOURCE_WIDGET_KEY)
+        previous_source = st.session_state.get(CATALOG_LAST_SOURCE_KEY)
+        if previous_source is not None and selected_source != previous_source:
+            for key in (
+                CATALOG_DATABASE_KEY,
+                CATALOG_SCHEMA_KEY,
+                CATALOG_SELECTED_DATASET_KEY,
+                CATALOG_DETAIL_KEY,
+                CATALOG_DATABASE_WIDGET_KEY,
+                CATALOG_SCHEMA_WIDGET_KEY,
+                CATALOG_DATASET_WIDGET_KEY,
+            ):
+                st.session_state.pop(key, None)
+        st.session_state[CATALOG_LAST_SOURCE_KEY] = selected_source
 
     source_scoped_catalog = [
         table for table in catalog if selected_source == ALL_SOURCES or _source_display_name(table.source_type) == selected_source
     ]
     database_options = [ALL_DATABASES] + sorted({table.database_name for table in source_scoped_catalog})
     with database_column:
-        selected_database = _selectbox_with_reset("Database", database_options, "catalog_database_filter")
+        selected_database = _selectbox_with_persistence("Database", database_options, CATALOG_DATABASE_KEY, CATALOG_DATABASE_WIDGET_KEY)
+        previous_database = st.session_state.get(CATALOG_LAST_DATABASE_KEY)
+        if previous_database is not None and selected_database != previous_database:
+            for key in (CATALOG_SCHEMA_KEY, CATALOG_SELECTED_DATASET_KEY, CATALOG_DETAIL_KEY, CATALOG_SCHEMA_WIDGET_KEY, CATALOG_DATASET_WIDGET_KEY):
+                st.session_state.pop(key, None)
+        st.session_state[CATALOG_LAST_DATABASE_KEY] = selected_database
 
     database_scoped_catalog = [
         table
@@ -360,7 +404,12 @@ with st.container(key="catalog-filter-row"):
     ]
     schema_options = [ALL_SCHEMAS] + sorted({table.schema_name for table in database_scoped_catalog})
     with schema_column:
-        selected_schema = _selectbox_with_reset("Schema", schema_options, "catalog_schema_filter")
+        selected_schema = _selectbox_with_persistence("Schema", schema_options, CATALOG_SCHEMA_KEY, CATALOG_SCHEMA_WIDGET_KEY)
+        previous_schema = st.session_state.get(CATALOG_LAST_SCHEMA_KEY)
+        if previous_schema is not None and selected_schema != previous_schema:
+            for key in (CATALOG_SELECTED_DATASET_KEY, CATALOG_DETAIL_KEY, CATALOG_DATASET_WIDGET_KEY):
+                st.session_state.pop(key, None)
+        st.session_state[CATALOG_LAST_SCHEMA_KEY] = selected_schema
 source_filter = None
 if selected_source != ALL_SOURCES:
     source_filter = [
@@ -384,7 +433,8 @@ except Exception:
 
 st.markdown('<div class="section-kicker">CATALOG RESULTS</div>', unsafe_allow_html=True)
 if not search_results:
-    st.session_state.pop("catalog_selected_dataset", None)
+    st.session_state.pop(CATALOG_SELECTED_DATASET_KEY, None)
+    st.session_state.pop(CATALOG_DETAIL_KEY, None)
     render_empty_state(
         "No datasets match your search and filters.",
         "Clear the search or adjust the selected filters to browse cataloged metadata.",
@@ -404,22 +454,36 @@ selected_dataset_by_identity = {
 }
 dataset_options = [result.dataset_id for result in search_results]
 dataset_options = [CHOOSE_DATASET] + dataset_options
-if st.session_state.get("catalog_selected_dataset") not in dataset_options:
-    st.session_state["catalog_selected_dataset"] = CHOOSE_DATASET
+restored_catalog_dataset = st.session_state.get(CATALOG_DETAIL_KEY) or st.session_state.get(CATALOG_SELECTED_DATASET_KEY)
+if st.session_state.get(CATALOG_SELECTED_DATASET_KEY) not in dataset_options:
+    st.session_state[CATALOG_SELECTED_DATASET_KEY] = (
+        restored_catalog_dataset if restored_catalog_dataset in selected_dataset_by_identity else CHOOSE_DATASET
+    )
 
+load_widget_state(
+    st.session_state,
+    CATALOG_SELECTED_DATASET_KEY,
+    CATALOG_DATASET_WIDGET_KEY,
+    CHOOSE_DATASET,
+    dataset_options,
+)
 selected_dataset_identity = st.selectbox(
     "Select dataset",
     dataset_options,
-    key="catalog_selected_dataset",
+    key=CATALOG_DATASET_WIDGET_KEY,
+    on_change=store_widget_state,
+    args=(st.session_state, CATALOG_SELECTED_DATASET_KEY, CATALOG_DATASET_WIDGET_KEY),
     format_func=lambda identity: CHOOSE_DATASET if identity == CHOOSE_DATASET else _dataset_label(selected_dataset_by_identity[identity]),
 )
 
 if selected_dataset_identity == CHOOSE_DATASET:
+    st.session_state.pop(CATALOG_DETAIL_KEY, None)
     st.caption("Choose a dataset to view its documentation and ranking explanation.")
     st.stop()
 
 selected_dataset = selected_dataset_by_identity[selected_dataset_identity]
 selected_result = {result.dataset_id: result for result in search_results}[selected_dataset_identity]
+st.session_state[CATALOG_DETAIL_KEY] = selected_dataset_identity
 
 if search_query:
     _render_ranking_explanation(selected_result)

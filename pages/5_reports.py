@@ -14,6 +14,7 @@ from ui.components import render_get_started_workflow, render_html_table, render
 from ui.report_export import build_export_filename, render_html_report, render_markdown_report, render_pdf_report
 from ui.report_view import build_column_profiles, build_metadata_summary, build_report_context, failed_results, format_profile_value, quality_health
 from ui.quality_trend import build_quality_trend_svg
+from ui.page_state import load_widget_state, store_widget_state
 
 
 require_authenticated()
@@ -21,6 +22,11 @@ require_authenticated()
 
 REPORT_DATASET_KEY = "reports_selected_dataset"
 REPORT_RUN_KEY = "reports_selected_run"
+REPORT_PREVIEW_KEY = "reports_preview_context"
+REPORT_PREVIEW_DATASET_KEY = "reports_preview_dataset"
+REPORT_PREVIEW_RUN_KEY = "reports_preview_run"
+REPORT_DATASET_WIDGET_KEY = "_reports_dataset_widget"
+REPORT_RUN_WIDGET_KEY = "_reports_quality_run_widget"
 CHOOSE_DATASET = "Choose a dataset"
 CHOOSE_RUN = "Choose a quality run"
 
@@ -83,7 +89,8 @@ def _render_dataset_overview(documentation: object) -> None:
     columns = st.columns(6)
     for column, (label, value) in zip(columns, fields):
         with column:
-            st.markdown(f'<div class="quality-context-item"><span>{escape(label)}</span><strong>{escape(value)}</strong></div>', unsafe_allow_html=True)
+            decoration = "data-nodes" if label in {"Source", "Database"} else "data-grid"
+            st.markdown(f'<div class="quality-context-item card-decoration-{decoration}"><div class="card-content"><span>{escape(label)}</span><strong>{escape(value)}</strong></div></div>', unsafe_allow_html=True)
 
 
 def _render_metadata_summary(documentation: object) -> None:
@@ -95,7 +102,7 @@ def _render_metadata_summary(documentation: object) -> None:
         ("catalog", "Nullable Columns", f"{summary.nullable_columns:,}", "Allow null values"),
         ("quality", "Numeric Columns", f"{summary.numeric_columns:,}", "Number and decimal types"),
         ("report", "Date / Datetime", f"{summary.date_datetime_columns:,}", "Date and datetime types"),
-    ], compact=True, show_detail=False)
+    ], compact=True, show_detail=False, decorations=["data-grid", "quality-signal", "data-nodes", "data-grid", "data-nodes"])
     st.markdown('<div class="section-kicker reports-section-kicker">COLUMN PROFILE</div>', unsafe_allow_html=True)
     profile_rows = build_column_profiles(documentation)
     if not profile_rows:
@@ -155,7 +162,19 @@ def _render_failed_checks(report: object) -> None:
 
 
 def _render_report_preview(table: TableMetadata, run: StoredQualityRun | None, all_runs: list[StoredQualityRun]) -> None:
-    context = build_report_context(table, run, all_runs) if run is not None else None
+    context = None
+    if run is not None and (
+        st.session_state.get(REPORT_PREVIEW_DATASET_KEY) == _dataset_id(table)
+        and st.session_state.get(REPORT_PREVIEW_RUN_KEY) == run.run_id
+    ):
+        cached_context = st.session_state.get(REPORT_PREVIEW_KEY)
+        if cached_context is not None:
+            context = cached_context
+    if context is None and run is not None:
+        context = build_report_context(table, run, all_runs)
+        st.session_state[REPORT_PREVIEW_KEY] = context
+        st.session_state[REPORT_PREVIEW_DATASET_KEY] = _dataset_id(table)
+        st.session_state[REPORT_PREVIEW_RUN_KEY] = run.run_id
     documentation = context.documentation if context is not None else MetadataDocumentationGenerator().generate(table)
     st.markdown('<div class="section-kicker reports-preview-heading">REPORT PREVIEW</div>', unsafe_allow_html=True)
     st.markdown('<div class="section-kicker reports-section-kicker">DATASET OVERVIEW</div>', unsafe_allow_html=True)
@@ -173,7 +192,7 @@ def _render_report_preview(table: TableMetadata, run: StoredQualityRun | None, a
         ("quality", "Failed Checks", f"{report.failed_rules:,}", "Rules with FAIL status"),
         ("quality", "Error Checks", f"{report.error_rules:,}", "Rules with ERROR status"),
         ("quality", "Total Checks", f"{report.total_rules:,}", "All persisted results"),
-    ])
+    ], decorations=["quality-signal", "quality-signal", "quality-signal", "quality-signal", "data-grid"])
     health = quality_health(report.quality_score)
     if health:
         st.caption(f"Quality health: {health}")
@@ -190,7 +209,7 @@ def _render_report_preview(table: TableMetadata, run: StoredQualityRun | None, a
         with preview_columns[1]:
             summary_rows = [("Dataset", _dataset_label(table)), ("Executed At", _history_timestamp(context.executed_at)), ("Quality Score", _format_percent(report.quality_score) if report.quality_score is not None else "—"), ("Total Checks", f"{report.total_rules:,}"), ("Passed", f"{report.passed_rules:,}"), ("Failed", f"{report.failed_rules:,}"), ("Errors", f"{report.error_rules:,}"), ("Run ID", context.run_id)]
             summary_html = "".join(f'<div class="quality-history-latest-row"><span>{escape(label)}</span><strong>{escape(value)}</strong></div>' for label, value in summary_rows)
-            st.markdown(f'<div class="quality-history-latest"><div class="quality-history-panel-title">DATASET / RUN SUMMARY</div>{summary_html}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="quality-history-latest card-decoration-data-grid"><div class="card-content"><div class="quality-history-panel-title">DATASET / RUN SUMMARY</div>{summary_html}</div></div>', unsafe_allow_html=True)
     _render_failed_checks(report)
     result_rows = [{"Rule": _quality_rule_label(result.rule_type), "Column / Scope": result.column, "Status": result.status, "Passed": f"{result.passed_records:,}", "Failed": f"{result.failed_records:,}", "Failure %": _format_percent(result.failure_percentage)} for result in report.results]
     st.markdown('<div class="section-kicker reports-section-kicker">RULE RESULTS</div>', unsafe_allow_html=True)
@@ -231,10 +250,22 @@ except Exception:
 
 table_options = {_dataset_id(table): table for table in catalog}
 dataset_options = [CHOOSE_DATASET] + list(table_options)
-if st.session_state.get(REPORT_DATASET_KEY) not in dataset_options:
-    st.session_state[REPORT_DATASET_KEY] = CHOOSE_DATASET
+load_widget_state(
+    st.session_state,
+    REPORT_DATASET_KEY,
+    REPORT_DATASET_WIDGET_KEY,
+    CHOOSE_DATASET,
+    dataset_options,
+)
 st.markdown('<div class="section-kicker reports-section-kicker">SELECT DATASET</div>', unsafe_allow_html=True)
-selected_dataset_id = st.selectbox("Dataset", dataset_options, key=REPORT_DATASET_KEY, format_func=lambda value: CHOOSE_DATASET if value == CHOOSE_DATASET else _dataset_label(table_options[value]))
+selected_dataset_id = st.selectbox(
+    "Dataset",
+    dataset_options,
+    key=REPORT_DATASET_WIDGET_KEY,
+    on_change=store_widget_state,
+    args=(st.session_state, REPORT_DATASET_KEY, REPORT_DATASET_WIDGET_KEY),
+    format_func=lambda value: CHOOSE_DATASET if value == CHOOSE_DATASET else _dataset_label(table_options[value]),
+)
 if selected_dataset_id == CHOOSE_DATASET:
     st.caption("Choose a persisted dataset to inspect its quality history.")
     st.stop()
@@ -243,6 +274,8 @@ selected_table = table_options[selected_dataset_id]
 if st.session_state.get("reports_active_dataset") != selected_dataset_id:
     st.session_state["reports_active_dataset"] = selected_dataset_id
     st.session_state[REPORT_RUN_KEY] = CHOOSE_RUN
+    for key in (REPORT_PREVIEW_KEY, REPORT_PREVIEW_DATASET_KEY, REPORT_PREVIEW_RUN_KEY):
+        st.session_state.pop(key, None)
 try:
     quality_runs = QualityRunRepository().list_quality_runs_for_dataset(selected_table.source_type, selected_table.database_name, selected_table.schema_name, selected_table.table_name, user_id=current_user_id())
 except Exception:
@@ -251,18 +284,36 @@ except Exception:
 st.markdown('<div class="section-kicker reports-section-kicker">SELECT RUN</div>', unsafe_allow_html=True)
 if not quality_runs:
     st.session_state[REPORT_RUN_KEY] = CHOOSE_RUN
+    for key in (REPORT_PREVIEW_KEY, REPORT_PREVIEW_DATASET_KEY, REPORT_PREVIEW_RUN_KEY):
+        st.session_state.pop(key, None)
     _render_report_preview(selected_table, None, [])
     st.stop()
 run_options = [CHOOSE_RUN] + [run.run_id for run in quality_runs]
 run_by_id = {run.run_id: run for run in quality_runs}
-if st.session_state.get(REPORT_RUN_KEY) not in run_options:
-    st.session_state[REPORT_RUN_KEY] = CHOOSE_RUN
-selected_run_id = st.selectbox("Quality Run", run_options, key=REPORT_RUN_KEY, format_func=lambda value: CHOOSE_RUN if value == CHOOSE_RUN else _run_label(run_by_id[value]))
+load_widget_state(
+    st.session_state,
+    REPORT_RUN_KEY,
+    REPORT_RUN_WIDGET_KEY,
+    CHOOSE_RUN,
+    run_options,
+)
+selected_run_id = st.selectbox(
+    "Quality Run",
+    run_options,
+    key=REPORT_RUN_WIDGET_KEY,
+    on_change=store_widget_state,
+    args=(st.session_state, REPORT_RUN_KEY, REPORT_RUN_WIDGET_KEY),
+    format_func=lambda value: CHOOSE_RUN if value == CHOOSE_RUN else _run_label(run_by_id[value]),
+)
 if selected_run_id == CHOOSE_RUN:
+    for key in (REPORT_PREVIEW_KEY, REPORT_PREVIEW_DATASET_KEY, REPORT_PREVIEW_RUN_KEY):
+        st.session_state.pop(key, None)
     st.caption("Choose a persisted quality run to preview its findings.")
     st.stop()
 authorized_run = QualityRunRepository().get_quality_run(selected_run_id, user_id=current_user_id())
 if authorized_run is None:
+    for key in (REPORT_PREVIEW_KEY, REPORT_PREVIEW_DATASET_KEY, REPORT_PREVIEW_RUN_KEY):
+        st.session_state.pop(key, None)
     st.error("The selected quality run is not available for this account.")
     st.stop()
 _render_report_preview(selected_table, authorized_run, quality_runs)

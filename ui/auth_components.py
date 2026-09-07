@@ -45,7 +45,6 @@ def render_auth_shell(page_key: str, title: str, subtitle: str) -> Iterator[obje
                             "",
                             icon=icon,
                             key=f"auth-theme-toggle-{page_key}",
-                            help="Switch theme",
                             on_click=_toggle_theme,
                             type="tertiary",
                         )
