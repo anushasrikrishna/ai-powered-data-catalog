@@ -10,10 +10,12 @@ from documentation import MetadataDocumentationGenerator
 from metadata.models import TableMetadata
 from storage.quality_repository import QualityRunRepository, StoredQualityRun
 from storage.repository import MetadataRepository
-from ui.components import render_get_started_workflow, render_html_table, render_page_header, render_workspace_status
+from storage.scan_history import compare_snapshots
+from ui.components import render_count_chips, render_get_started_workflow, render_html_table, render_page_header, render_workspace_status
 from ui.report_export import build_export_filename, render_html_report, render_markdown_report, render_pdf_report
-from ui.report_view import build_column_profiles, build_metadata_summary, build_report_context, failed_results, format_profile_value, quality_health
+from ui.report_view import CatalogReportContext, build_catalog_report_context, build_column_profiles, build_metadata_summary, build_report_context, failed_results, format_profile_value, quality_health
 from ui.quality_trend import build_quality_trend_svg
+from ui.metadata_trends import build_dataset_growth_trend_svg, build_schema_evolution_trend_svg
 from ui.page_state import load_widget_state, store_widget_state
 
 
@@ -27,6 +29,11 @@ REPORT_PREVIEW_DATASET_KEY = "reports_preview_dataset"
 REPORT_PREVIEW_RUN_KEY = "reports_preview_run"
 REPORT_DATASET_WIDGET_KEY = "_reports_dataset_widget"
 REPORT_RUN_WIDGET_KEY = "_reports_quality_run_widget"
+REPORT_TYPE_KEY = "reports_report_type"
+REPORT_CATALOG_DATASET_KEY = "reports_catalog_dataset"
+REPORT_CATALOG_DATASET_WIDGET_KEY = "_reports_catalog_dataset_widget"
+REPORT_TYPE_QUALITY = "Data Quality Report"
+REPORT_TYPE_CATALOG = "Data Catalog Report"
 CHOOSE_DATASET = "Choose a dataset"
 CHOOSE_RUN = "Choose a quality run"
 
@@ -49,6 +56,18 @@ def _history_timestamp(value: str) -> str:
         return parsed.astimezone().strftime("%d %b %Y, %I:%M %p").lstrip("0")
     except (TypeError, ValueError):
         return value
+
+
+def _scan_history_timestamp(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone().strftime("%d %b %Y %H:%M")
+    except (TypeError, ValueError):
+        return value
+
+
+def _scan_history_growth(value: float | None) -> str:
+    return "—" if value is None else f"{value:+.2f}%"
 
 
 def _run_label(run: StoredQualityRun) -> str:
@@ -77,7 +96,7 @@ def _format_value(value: object) -> str:
     return str(value)
 
 
-def _render_dataset_overview(documentation: object) -> None:
+def _render_dataset_overview(documentation: object, latest_scan: str | None = None) -> None:
     fields = [
         ("Source", _source_name(documentation.source_type)),
         ("Database", documentation.database_name),
@@ -86,7 +105,9 @@ def _render_dataset_overview(documentation: object) -> None:
         ("Rows", "—" if documentation.summary.row_count is None else f"{documentation.summary.row_count:,}"),
         ("Columns", f"{documentation.summary.column_count:,}"),
     ]
-    columns = st.columns(6)
+    if latest_scan:
+        fields.append(("Latest Scan", _history_timestamp(latest_scan)))
+    columns = st.columns(len(fields))
     for column, (label, value) in zip(columns, fields):
         with column:
             decoration = "data-nodes" if label in {"Source", "Database"} else "data-grid"
@@ -159,6 +180,119 @@ def _render_failed_checks(report: object) -> None:
             "Message": lambda value, _row: f'<span class="html-table-secondary">{escape(str(value))}</span>',
         },
     )
+
+
+def _catalog_history_rows(context: CatalogReportContext) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for index, snapshot in enumerate(context.scan_history):
+        comparison = compare_snapshots(context.scan_history[index + 1], snapshot) if index + 1 < len(context.scan_history) else None
+        rows.append({
+            "Scan Date": _scan_history_timestamp(snapshot.scanned_at),
+            "Rows": "—" if snapshot.row_count is None else f"{snapshot.row_count:,}",
+            "Columns": snapshot.column_count,
+            "Net Change": "—" if comparison is None else f"{comparison.net_row_change:+,}",
+            "Growth": "—" if comparison is None else _scan_history_growth(comparison.growth_percent),
+            "Schema Changes": "—" if comparison is None else comparison.schema_change_count,
+        })
+    return rows
+
+
+def _render_catalog_report_preview(context: CatalogReportContext) -> None:
+    documentation = context.documentation
+    summary = documentation.summary
+    st.markdown('<div class="section-kicker reports-preview-heading">REPORT PREVIEW</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-kicker reports-section-kicker">DATASET OVERVIEW</div>', unsafe_allow_html=True)
+    _render_dataset_overview(documentation, context.scan_history[0].scanned_at if context.scan_history else None)
+
+    st.markdown('<div class="section-kicker reports-section-kicker">METADATA SUMMARY</div>', unsafe_allow_html=True)
+    metadata = build_metadata_summary(documentation)
+    render_workspace_status([
+        ("catalog", "Total Columns", f"{metadata.total_columns:,}", "Persisted metadata"),
+        ("quality", "Required Columns", f"{metadata.non_nullable_columns:,}", "Non-nullable columns"),
+        ("catalog", "Nullable Columns", f"{metadata.nullable_columns:,}", "Allow null values"),
+        ("quality", "Numeric Columns", f"{metadata.numeric_columns:,}", "Number and decimal types"),
+        ("report", "Date / Datetime", f"{metadata.date_datetime_columns:,}", "Date and datetime types"),
+    ], compact=True, show_detail=False, decorations=["data-grid", "quality-signal", "data-nodes", "data-grid", "data-nodes"])
+
+    render_count_chips("DATA TYPE DISTRIBUTION", [(label, count) for label, count in [
+        ("Number", summary.number_column_count), ("Decimal", summary.decimal_column_count),
+        ("String", summary.string_column_count), ("Date", summary.date_column_count),
+        ("Datetime", summary.datetime_column_count), ("Boolean", summary.boolean_column_count),
+        ("Binary", summary.binary_column_count), ("Other", summary.other_column_count)] if count], decoration="data-grid")
+    categories: dict[str, int] = {}
+    for column in documentation.columns:
+        categories[column.possible_category] = categories.get(column.possible_category, 0) + 1
+    render_count_chips("COLUMN CLASSIFICATIONS", sorted(categories.items()), kind="category", decoration="data-nodes")
+
+    st.markdown('<div class="section-kicker reports-section-kicker">COLUMN METADATA</div>', unsafe_allow_html=True)
+    column_rows = [{
+        "Column": column.column_name, "Source Type": column.source_data_type,
+        "Normalized Type": column.normalized_data_type, "Possible Category": column.possible_category,
+        "Nullable": "Yes" if column.nullable else "No", "Position": column.ordinal_position,
+        "Null Count": column.null_count, "Distinct Count": column.distinct_count,
+        "Minimum": format_profile_value(column.minimum, column.normalized_data_type),
+        "Maximum": format_profile_value(column.maximum, column.normalized_data_type),
+    } for column in documentation.columns]
+    if column_rows:
+        render_html_table(column_rows, table_id="reports-catalog-column-metadata", download=False,
+                          column_widths=[14, 12, 13, 14, 8, 8, 9, 10, 6, 6])
+
+    if context.comparison is not None:
+        comparison = context.comparison
+        chronological = list(reversed(context.scan_history))
+        growth_points = []
+        schema_points = []
+        for index, snapshot in enumerate(chronological):
+            prior = compare_snapshots(chronological[index - 1], snapshot) if index else None
+            growth_points.append((_history_timestamp(snapshot.scanned_at), snapshot.row_count, prior.net_row_change if prior else None, prior.growth_percent if prior else None))
+            schema_points.append((_history_timestamp(snapshot.scanned_at), snapshot.column_count, prior.schema_change_count if prior else None, len(prior.added_columns) if prior else 0, len(prior.removed_columns) if prior else 0, (len(prior.type_changes) + len(prior.nullability_changes)) if prior else 0))
+        growth_svg = build_dataset_growth_trend_svg(growth_points)
+        schema_svg = build_schema_evolution_trend_svg(schema_points)
+        if growth_svg and schema_svg:
+            st.markdown('<div class="section-kicker reports-section-kicker">EVOLUTION TRENDS</div>', unsafe_allow_html=True)
+            trend_columns = st.columns(2, gap="large")
+            with trend_columns[0]:
+                st.markdown(f'<div class="quality-visual-panel"><div class="quality-history-panel-title">DATASET GROWTH TREND</div>{growth_svg}</div>', unsafe_allow_html=True)
+            with trend_columns[1]:
+                st.markdown(f'<div class="quality-visual-panel"><div class="quality-history-panel-title">SCHEMA EVOLUTION</div>{schema_svg}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-kicker reports-section-kicker">DATASET EVOLUTION</div>', unsafe_allow_html=True)
+        render_workspace_status([
+            ("dashboard", "Previous Rows", "—" if comparison.previous.row_count is None else f"{comparison.previous.row_count:,}", "Previous scan"),
+            ("dashboard", "Current Rows", "—" if comparison.current.row_count is None else f"{comparison.current.row_count:,}", "Latest scan"),
+            ("quality", "Net Row Change", f"{comparison.net_row_change:+,}", "Current minus previous"),
+            ("search", "Data Growth %", _format_percent(comparison.growth_percent), "Compared with previous"),
+            ("catalog", "Column Change", f"{comparison.column_change:+,}", "Current minus previous"),
+            ("quality", "Schema Changes", f"{comparison.schema_change_count:,}", "Added, removed, or modified"),
+        ], compact=True, show_detail=True, decorations=["data-grid", "data-grid", "quality-signal", "quality-signal", "data-nodes", "data-grid"])
+        st.markdown('<div class="section-kicker reports-section-kicker">CHANGE SUMMARY</div>', unsafe_allow_html=True)
+        change_rows = [{"Change": "COLUMN ADDED", "Column": name, "Details": "+ Added"} for name in comparison.added_columns]
+        change_rows += [{"Change": "COLUMN REMOVED", "Column": name, "Details": "- Removed"} for name in comparison.removed_columns]
+        change_rows += [{"Change": "DATA TYPE CHANGED", "Column": item["column"], "Details": f'{item["from"]} -> {item["to"]}'} for item in comparison.type_changes]
+        change_rows += [{"Change": "NULLABILITY CHANGED", "Column": item["column"], "Details": f'{item["from"]} -> {item["to"]}'} for item in comparison.nullability_changes]
+        change_rows += [{"Change": "NULL COUNT CHANGED", "Column": item["column"], "Details": f'{item["from"]} -> {item["to"]}'} for item in comparison.null_count_changes]
+        change_rows += [{"Change": "DISTINCT COUNT CHANGED", "Column": item["column"], "Details": f'{item["from"]} -> {item["to"]}'} for item in comparison.distinct_count_changes]
+        if change_rows:
+            render_html_table(change_rows, table_id="reports-catalog-change-summary", download=False)
+        else:
+            st.caption("No metadata or schema changes detected between the latest scans.")
+        st.markdown('<div class="section-kicker reports-section-kicker">SCAN HISTORY</div>', unsafe_allow_html=True)
+        render_html_table(_catalog_history_rows(context), table_id="reports-catalog-scan-history", download=False,
+                          column_widths=[28, 12, 12, 14, 14, 20], max_visible_rows=5,
+                          sticky_header=True, scrollable=True)
+
+    st.markdown('<div class="section-kicker reports-section-kicker">EXPORT REPORT</div>', unsafe_allow_html=True)
+    try:
+        html_export, markdown_export, pdf_export = render_html_report(context), render_markdown_report(context), render_pdf_report(context)
+    except Exception:
+        st.error("Unable to prepare the catalog report export.")
+        return
+    export_columns = st.columns(3, gap="medium")
+    with export_columns[0]:
+        st.download_button("HTML", data=html_export, file_name=build_export_filename(context, "html"), mime="text/html", icon=":material/description:", key="reports-export-catalog-html")
+    with export_columns[1]:
+        st.download_button("Markdown", data=markdown_export, file_name=build_export_filename(context, "md"), mime="text/markdown", icon=":material/article:", key="reports-export-catalog-markdown")
+    with export_columns[2]:
+        st.download_button("PDF", data=pdf_export, file_name=build_export_filename(context, "pdf"), mime="application/pdf", icon=":material/picture_as_pdf:", key="reports-export-catalog-pdf")
 
 
 def _render_report_preview(table: TableMetadata, run: StoredQualityRun | None, all_runs: list[StoredQualityRun]) -> None:
@@ -239,8 +373,15 @@ def _render_report_preview(table: TableMetadata, run: StoredQualityRun | None, a
         st.download_button("PDF", data=pdf_export, file_name=build_export_filename(context, "pdf"), mime="application/pdf", icon=":material/picture_as_pdf:", key="reports-export-pdf")
 
 
-render_page_header("Reports", "Review persisted metadata and data-quality findings.", "Inspect historical quality runs without reconnecting to the source system.", icon="report")
-render_get_started_workflow([("catalog", "SELECT DATASET"), ("quality", "SELECT RUN"), ("report", "PREVIEW"), ("report", "EXPORT")], class_name="get-started-workflow metadata-scan-workflow")
+render_page_header("Reports", "Review and export persisted catalog metadata and data-quality findings.", "Generate documentation and historical reports without reconnecting to the source system.", icon="report")
+if REPORT_TYPE_KEY not in st.session_state:
+    st.session_state[REPORT_TYPE_KEY] = REPORT_TYPE_QUALITY
+st.markdown('<div class="section-kicker reports-section-kicker">REPORT TYPE</div>', unsafe_allow_html=True)
+report_type = st.radio("Report Type", [REPORT_TYPE_QUALITY, REPORT_TYPE_CATALOG], key=REPORT_TYPE_KEY, horizontal=True, label_visibility="collapsed")
+if report_type == REPORT_TYPE_CATALOG:
+    render_get_started_workflow([("catalog", "SELECT DATASET"), ("report", "PREVIEW"), ("report", "EXPORT")], class_name="get-started-workflow metadata-scan-workflow")
+else:
+    render_get_started_workflow([("catalog", "SELECT DATASET"), ("quality", "SELECT RUN"), ("report", "PREVIEW"), ("report", "EXPORT")], class_name="get-started-workflow metadata-scan-workflow")
 
 try:
     catalog = MetadataRepository().list_tables(current_user_id())
@@ -249,6 +390,29 @@ except Exception:
     st.stop()
 
 table_options = {_dataset_id(table): table for table in catalog}
+
+if report_type == REPORT_TYPE_CATALOG:
+    catalog_dataset_options = [CHOOSE_DATASET] + list(table_options)
+    load_widget_state(st.session_state, REPORT_CATALOG_DATASET_KEY, REPORT_CATALOG_DATASET_WIDGET_KEY, CHOOSE_DATASET, catalog_dataset_options)
+    st.markdown('<div class="section-kicker reports-section-kicker">SELECT DATASET</div>', unsafe_allow_html=True)
+    catalog_dataset_id = st.selectbox(
+        "Catalog Dataset", catalog_dataset_options, key=REPORT_CATALOG_DATASET_WIDGET_KEY,
+        on_change=store_widget_state, args=(st.session_state, REPORT_CATALOG_DATASET_KEY, REPORT_CATALOG_DATASET_WIDGET_KEY),
+        format_func=lambda value: CHOOSE_DATASET if value == CHOOSE_DATASET else _dataset_label(table_options[value]),
+    )
+    if catalog_dataset_id == CHOOSE_DATASET:
+        st.caption("Choose a persisted catalog dataset to preview its documentation.")
+        st.stop()
+    catalog_table = table_options[catalog_dataset_id]
+    try:
+        catalog_history = MetadataRepository().list_scan_history(catalog_table.source_type, catalog_table.database_name, catalog_table.schema_name, catalog_table.table_name, current_user_id())
+        catalog_context = build_catalog_report_context(catalog_table, catalog_history)
+    except Exception:
+        st.error("Unable to load persisted catalog metadata.")
+        st.stop()
+    _render_catalog_report_preview(catalog_context)
+    st.stop()
+
 dataset_options = [CHOOSE_DATASET] + list(table_options)
 load_widget_state(
     st.session_state,

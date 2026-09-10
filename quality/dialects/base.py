@@ -67,6 +67,31 @@ class QualityDialect(ABC):
         """Return a bounded grouped failure-value query when the dialect supports it."""
         return None
 
+    def build_failed_records_statement(
+        self,
+        engine: Any,
+        table_metadata: TableMetadata,
+        rule: QualityRule,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> Select[Any] | None:
+        """Return complete source rows matching a rule's failure predicate."""
+        return None
+
+    def _failed_records(
+        self,
+        table: Table,
+        predicate: Any,
+        limit: int | None,
+        offset: int,
+    ) -> Select[Any]:
+        statement = select(table).where(predicate).order_by(*table.c)
+        if offset:
+            statement = statement.offset(max(0, int(offset)))
+        if limit is not None:
+            statement = statement.limit(max(1, int(limit)))
+        return statement
+
     def _grouped_failure_detail(self, table: Table, column: Any, predicate: Any, limit: int) -> Select[Any]:
         count = func.count().label("failure_count")
         return (

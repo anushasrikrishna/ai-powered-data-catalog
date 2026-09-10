@@ -199,6 +199,12 @@ def render_html_table(
     cell_renderers: dict[str, Callable[[Any, dict[Any, Any]], str]] | None = None,
     action: dict[str, Any] | None = None,
     table_class: str | None = None,
+    max_visible_rows: int | None = None,
+    sticky_header: bool = False,
+    scrollable: bool = False,
+    compact: bool = False,
+    max_width: str | None = None,
+    fill_available_width: bool = False,
 ) -> None:
     """Render tabular data without Streamlit's Arrow serialization path."""
     headers, rows = _table_records(data)
@@ -360,6 +366,24 @@ def render_html_table(
 
     table_kind = "catalog" if headers == ["Source", "Database", "Schema", "Table", "Type", "Rows", "Columns"] else "metadata"
     table_width_class = f" {sanitize_table_id(table_class)}" if table_class else ""
+    if fill_available_width:
+        table_width_class += " html-table--fill-available"
+    table_behavior_classes = []
+    if compact:
+        table_behavior_classes.append("html-table-wrapper--compact")
+    if sticky_header:
+        table_behavior_classes.append("html-table-wrapper--sticky-header")
+    should_scroll = bool(scrollable and max_visible_rows and len(rows) > max_visible_rows)
+    if should_scroll:
+        table_behavior_classes.append("html-table-wrapper--scrollable")
+    wrapper_class = " " + " ".join(table_behavior_classes) if table_behavior_classes else ""
+    wrapper_style = f' style="max-width:{escape(str(max_width))};"' if max_width else ""
+    scroll_style = ""
+    if should_scroll:
+        header_height = 46
+        row_height = 43 if compact else 46
+        visible_rows = min(len(rows), max_visible_rows or 5)
+        scroll_style = f' style="max-height:{header_height + visible_rows * row_height}px;"'
     def width_attribute(index: int) -> str:
         return f' style="width:{column_widths[index]}%"' if column_widths is not None else ""
 
@@ -385,7 +409,7 @@ def render_html_table(
         return
     assert table_shell is not None
     table_shell.markdown(
-        f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper"><div class="html-table-scroll"><table class="html-table html-table--{table_kind}{table_width_class}"><thead><tr>{header_html}</tr></thead>'
+        f'<div id="html-table-{safe_table_id}" data-table-id="{safe_table_id}" class="html-table-wrapper{wrapper_class}"{wrapper_style}><div class="html-table-scroll"{scroll_style}><table class="html-table html-table--{table_kind}{table_width_class}"><thead><tr>{header_html}</tr></thead>'
         f"<tbody>{body_html}</tbody></table></div></div>",
         unsafe_allow_html=True,
     )

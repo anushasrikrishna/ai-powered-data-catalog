@@ -8,6 +8,7 @@ from typing import Any
 from documentation.models import TableDocumentation
 from documentation.summarizer import MetadataDocumentationGenerator
 from quality.rule_engine import QualityReport, QualityResult
+from storage.scan_history import ScanComparison, ScanSnapshot, compare_snapshots
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,16 @@ class ReportContext:
     historical_runs: tuple[tuple[str, QualityReport], ...]
 
 
+@dataclass(frozen=True)
+class CatalogReportContext:
+    """Persisted catalog documentation and optional scan evolution data."""
+
+    report_type: str
+    documentation: TableDocumentation
+    scan_history: tuple[ScanSnapshot, ...]
+    comparison: ScanComparison | None
+
+
 def build_metadata_summary(documentation: TableDocumentation) -> ReportMetadataSummary:
     summary = documentation.summary
     return ReportMetadataSummary(
@@ -49,6 +60,18 @@ def build_report_context(table: Any, run: Any, all_runs: list[Any]) -> ReportCon
         run_id=run.run_id,
         executed_at=run.executed_at,
         historical_runs=tuple((item.executed_at, item.report) for item in reversed(all_runs)),
+    )
+
+
+def build_catalog_report_context(table: Any, scan_history: list[ScanSnapshot]) -> CatalogReportContext:
+    documentation = MetadataDocumentationGenerator().generate(table)
+    history = tuple(scan_history)
+    comparison = compare_snapshots(history[1], history[0]) if len(history) >= 2 else None
+    return CatalogReportContext(
+        report_type="catalog",
+        documentation=documentation,
+        scan_history=history,
+        comparison=comparison,
     )
 
 
@@ -131,7 +154,9 @@ def quality_health(score: float | None) -> str | None:
 __all__ = [
     "ReportMetadataSummary",
     "ReportContext",
+    "CatalogReportContext",
     "build_report_context",
+    "build_catalog_report_context",
     "build_column_profiles",
     "build_metadata_summary",
     "failed_results",

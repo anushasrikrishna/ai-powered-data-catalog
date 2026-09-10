@@ -109,6 +109,66 @@ class TestQualityRuleEngine(unittest.TestCase):
         self.assertEqual(result.failed_records, 1)
         self.assertEqual(result.passed_records, 6)
 
+    def test_failed_records_are_complete_and_match_rule_counts(self) -> None:
+        cases = [
+            (NotNullRule(column="email"), 1),
+            (UniqueRule(column="email"), 5),
+            (AcceptedValuesRule(column="status", accepted_values=["ACTIVE", "INACTIVE"]), 1),
+            (NumericRangeRule(column="amount", min_value=10, max_value=50), 1),
+            (StringLengthRule(column="name", min_length=3, max_length=8), 2),
+        ]
+        for rule, expected_count in cases:
+            with self.subTest(rule=rule.rule_type):
+                result = self.engine_under_test.execute_rule(self.connector, self.table_metadata, rule)
+                records = self.engine_under_test.inspect_failed_records(
+                    self.connector, self.table_metadata, rule, limit=None
+                )
+                self.assertEqual(result.failed_records, expected_count)
+                self.assertEqual(len(records), result.failed_records)
+                self.assertEqual(list(records[0]), [column.column_name for column in self.table_metadata.columns])
+
+        null_record = self.engine_under_test.inspect_failed_records(
+            self.connector, self.table_metadata, NotNullRule(column="email"), limit=None
+        )[0]
+        self.assertIsNone(null_record["email"])
+
+    def test_failed_record_view_limit_does_not_change_complete_result(self) -> None:
+        rule = UniqueRule(column="email")
+        visible = self.engine_under_test.inspect_failed_records(
+            self.connector, self.table_metadata, rule, limit=2
+        )
+        complete = self.engine_under_test.inspect_failed_records(
+            self.connector, self.table_metadata, rule, limit=None
+        )
+        self.assertEqual(len(visible), 2)
+        self.assertEqual(len(complete), 5)
+
+    def test_all_failed_records_are_unique_with_combined_reasons(self) -> None:
+        report = self.engine_under_test.execute_rules(
+            self.connector,
+            self.table_metadata,
+            [
+                UniqueRule(column="email"),
+                AcceptedValuesRule(column="status", accepted_values=["ACTIVE", "INACTIVE"]),
+                NumericRangeRule(column="amount", min_value=10, max_value=50),
+                StringLengthRule(column="name", min_length=3, max_length=8),
+            ],
+        )
+        records = self.engine_under_test.inspect_all_failed_records(
+            self.connector, self.table_metadata, report.results
+        )
+
+        self.assertEqual(len(records), 5)
+        self.assertEqual(
+            list(records[0]),
+            [column.column_name for column in self.table_metadata.columns] + ["Failed Reason"],
+        )
+        row_with_multiple_failures = next(record for record in records if record["id"] == 2)
+        self.assertIn("email: Unique", row_with_multiple_failures["Failed Reason"])
+        self.assertIn("status: Accepted Values", row_with_multiple_failures["Failed Reason"])
+        self.assertIn("amount: Numeric Range", row_with_multiple_failures["Failed Reason"])
+        self.assertIn("name: String Length", row_with_multiple_failures["Failed Reason"])
+
     def test_numeric_range_is_inclusive_and_ignores_null(self) -> None:
         result = self.engine_under_test.execute_rule(
             self.connector,

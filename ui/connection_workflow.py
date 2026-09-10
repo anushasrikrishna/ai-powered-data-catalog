@@ -177,8 +177,12 @@ def render_connected_sources_table() -> None:
         rows,
         table_id="connected-quality-sources",
         download=False,
-        column_widths=[20, 22, 27, 31],
+        column_widths=[20, 22, 38, 20],
         cell_renderers={"Status": _connection_status_cell},
+        max_visible_rows=5,
+        sticky_header=True,
+        scrollable=True,
+        compact=True,
     )
 
 

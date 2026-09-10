@@ -12,6 +12,7 @@ from catalog.repository import CatalogEntry, CatalogRepository
 from catalog.search import CatalogFilters, CatalogSearch, CatalogSearchResult
 from metadata.models import TableMetadata
 from storage.repository import MetadataRepository
+from storage.scan_history import ScanComparison, ScanSnapshot, compare_snapshots
 from ui.components import (
     render_count_chips,
     render_empty_state,
@@ -20,6 +21,7 @@ from ui.components import (
     render_workspace_status,
 )
 from ui.page_state import load_widget_state, store_widget_state
+from ui.metadata_trends import build_dataset_growth_trend_svg, build_schema_evolution_trend_svg
 
 
 require_authenticated()
@@ -201,7 +203,7 @@ def _documentation_column_rows(documentation: TableDocumentation) -> list[dict[s
     ]
 
 
-def _render_documentation_summary(documentation: TableDocumentation) -> None:
+def _render_documentation_summary_cards(documentation: TableDocumentation) -> None:
     summary = documentation.summary
     render_workspace_status(
         [
@@ -213,6 +215,8 @@ def _render_documentation_summary(documentation: TableDocumentation) -> None:
         decorations=["data-grid", "data-grid", "data-nodes", "quality-signal"],
     )
 
+def _render_documentation_breakdowns(documentation: TableDocumentation) -> None:
+    summary = documentation.summary
     st.markdown('<div class="documentation-summary-gap" aria-hidden="true"></div>', unsafe_allow_html=True)
     type_counts = [
         ("Number", summary.number_column_count),
@@ -255,6 +259,139 @@ def _render_documentation_summary(documentation: TableDocumentation) -> None:
         )
 
 
+def _format_timestamp(value: str) -> str:
+    try:
+        from datetime import datetime
+
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%d %b %Y %H:%M")
+    except ValueError:
+        return value
+
+
+def _signed_count(value: int | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:+,}"
+
+
+def _signed_percent(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:+.2f}%"
+
+
+def _render_dataset_evolution(comparison: ScanComparison) -> None:
+    st.markdown('<div class="documentation-subsection-title">DATASET EVOLUTION</div>', unsafe_allow_html=True)
+    st.caption(
+        f"Current Scan: {_format_timestamp(comparison.current.scanned_at)} · "
+        f"Compared With: {_format_timestamp(comparison.previous.scanned_at)}"
+    )
+    render_workspace_status(
+        [
+            ("dashboard", "Previous Rows", _format_count(comparison.previous.row_count), "Previous scan"),
+            ("dashboard", "Current Rows", _format_count(comparison.current.row_count), "Latest scan"),
+            ("quality", "Net Row Change", _signed_count(comparison.net_row_change), "Current minus previous"),
+            ("search", "Data Growth %", _signed_percent(comparison.growth_percent), "Compared with previous"),
+            ("catalog", "Column Change", _signed_count(comparison.column_change), "Current minus previous"),
+            ("quality", "Schema Changes", f"{comparison.schema_change_count:,}", "Added, removed, or modified"),
+        ],
+        compact=True,
+        show_detail=True,
+        decorations=["data-grid", "data-grid", "quality-signal", "quality-signal", "data-nodes", "data-grid"],
+    )
+
+
+def _render_evolution_trends(history: list[ScanSnapshot]) -> None:
+    chronological = list(reversed(history))
+    growth_points: list[tuple[str, int | None, int | None, float | None]] = []
+    schema_points: list[tuple[str, int, int | None, int, int, int]] = []
+    for index, snapshot in enumerate(chronological):
+        comparison = compare_snapshots(chronological[index - 1], snapshot) if index else None
+        growth_points.append(
+            (_format_timestamp(snapshot.scanned_at), snapshot.row_count,
+             comparison.net_row_change if comparison else None,
+             comparison.growth_percent if comparison else None)
+        )
+        schema_points.append(
+            (_format_timestamp(snapshot.scanned_at), snapshot.column_count,
+             comparison.schema_change_count if comparison else None,
+             len(comparison.added_columns) if comparison else 0,
+             len(comparison.removed_columns) if comparison else 0,
+             (len(comparison.type_changes) + len(comparison.nullability_changes) if comparison else 0))
+        )
+    growth_svg = build_dataset_growth_trend_svg(growth_points)
+    schema_svg = build_schema_evolution_trend_svg(schema_points)
+    if not growth_svg or not schema_svg:
+        return
+    st.markdown('<div class="documentation-subsection-title">EVOLUTION TRENDS</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="metadata-evolution-trends">'
+        f'<section class="metadata-evolution-trend-card"><div class="metadata-evolution-trend-title">'
+        f'DATASET GROWTH TREND</div>{growth_svg}</section>'
+        f'<section class="metadata-evolution-trend-card"><div class="metadata-evolution-trend-title">'
+        f'SCHEMA EVOLUTION</div>{schema_svg}</section></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _change_summary_rows(comparison: ScanComparison) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    rows.extend({"Change": "COLUMN ADDED", "Column": name, "Details": "+ Added"} for name in comparison.added_columns)
+    rows.extend({"Change": "COLUMN REMOVED", "Column": name, "Details": "− Removed"} for name in comparison.removed_columns)
+    rows.extend(
+        {"Change": "DATA TYPE CHANGED", "Column": item["column"], "Details": f'{item["from"]} → {item["to"]}'}
+        for item in comparison.type_changes
+    )
+    rows.extend(
+        {"Change": "NULLABILITY CHANGED", "Column": item["column"], "Details": f'{item["from"]} → {item["to"]}'}
+        for item in comparison.nullability_changes
+    )
+    rows.extend(
+        {"Change": "NULL COUNT CHANGED", "Column": item["column"], "Details": f'{item["from"]} → {item["to"]}'}
+        for item in comparison.null_count_changes
+    )
+    rows.extend(
+        {"Change": "DISTINCT COUNT CHANGED", "Column": item["column"], "Details": f'{item["from"]} → {item["to"]}'}
+        for item in comparison.distinct_count_changes
+    )
+    return rows
+
+
+def _render_change_summary(comparison: ScanComparison) -> None:
+    rows = _change_summary_rows(comparison)
+    st.markdown('<div class="documentation-subsection-title">CHANGE SUMMARY</div>', unsafe_allow_html=True)
+    if not rows:
+        st.caption("No metadata or schema changes detected between the latest scans.")
+        return
+    render_html_table(rows, table_id="catalog-change-summary", download_filename="catalog_change_summary.csv")
+
+
+def _render_scan_history(history: list[ScanSnapshot]) -> None:
+    st.markdown('<div class="documentation-subsection-title">SCAN HISTORY</div>', unsafe_allow_html=True)
+    rows: list[dict[str, str | int]] = []
+    for index, snapshot in enumerate(history):
+        comparison = compare_snapshots(history[index + 1], snapshot) if index + 1 < len(history) else None
+        rows.append(
+            {
+                "Scan Date": _format_timestamp(snapshot.scanned_at),
+                "Rows": _format_count(snapshot.row_count),
+                "Columns": snapshot.column_count,
+                "Net Change": _signed_count(comparison.net_row_change if comparison else None),
+                "Growth": _signed_percent(comparison.growth_percent if comparison else None),
+                "Schema Changes": comparison.schema_change_count if comparison else "—",
+            }
+        )
+    render_html_table(
+        rows,
+        table_id="catalog-scan-history",
+        download_filename="catalog_scan_history.csv",
+        column_widths=[28, 12, 12, 14, 14, 20],
+        max_visible_rows=5,
+        sticky_header=True,
+        scrollable=True,
+    )
+
+
 def _render_ranking_explanation(result: CatalogSearchResult) -> None:
     with st.expander("WHY THIS RESULT MATCHED", expanded=True):
         st.markdown(
@@ -290,7 +427,16 @@ def _render_ranking_explanation(result: CatalogSearchResult) -> None:
 def _render_selected_dataset_documentation(
     table_metadata: TableMetadata,
     documentation: TableDocumentation | None = None,
+    scan_history: list[ScanSnapshot] | None = None,
 ) -> None:
+    if scan_history is None:
+        scan_history = MetadataRepository().list_scan_history(
+            table_metadata.source_type,
+            table_metadata.database_name,
+            table_metadata.schema_name,
+            table_metadata.table_name,
+            current_user_id(),
+        )
     if documentation is None:
         try:
             documentation = MetadataDocumentationGenerator().generate(table_metadata)
@@ -300,7 +446,13 @@ def _render_selected_dataset_documentation(
     if documentation is not None:
         st.markdown('<div class="section-kicker">DOCUMENTATION</div>', unsafe_allow_html=True)
         st.markdown('<div class="documentation-subsection-title">TECHNICAL SUMMARY</div>', unsafe_allow_html=True)
-        _render_documentation_summary(documentation)
+        _render_documentation_summary_cards(documentation)
+        if len(scan_history) >= 2:
+            comparison = compare_snapshots(scan_history[1], scan_history[0])
+            _render_dataset_evolution(comparison)
+            _render_evolution_trends(scan_history)
+            _render_change_summary(comparison)
+        _render_documentation_breakdowns(documentation)
         column_rows = _documentation_column_rows(documentation)
     else:
         column_rows = _column_rows(table_metadata)
@@ -320,6 +472,9 @@ def _render_selected_dataset_documentation(
         )
     else:
         render_empty_state("No columns found", "This cataloged dataset has no stored column metadata.", "catalog")
+
+    if len(scan_history) >= 2:
+        _render_scan_history(scan_history)
 
 
 render_page_header(
@@ -431,6 +586,12 @@ except Exception:
     st.error("Unable to search the metadata catalog.")
     st.stop()
 
+search_results = sorted(
+    search_results,
+    key=lambda result: str(getattr(metadata_by_dataset_id[result.dataset_id], "scanned_at", "") or ""),
+    reverse=True,
+)
+
 st.markdown('<div class="section-kicker">CATALOG RESULTS</div>', unsafe_allow_html=True)
 if not search_results:
     st.session_state.pop(CATALOG_SELECTED_DATASET_KEY, None)
@@ -446,6 +607,9 @@ render_html_table(
     _catalog_rows(search_results),
     table_id="catalog-results",
     download_filename="catalog_results.csv",
+    max_visible_rows=5,
+    sticky_header=True,
+    scrollable=True,
 )
 
 selected_dataset_by_identity = {
