@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from html import escape
 from typing import Any
@@ -30,7 +31,7 @@ from quality.rule_models import (
 )
 from storage.repository import MetadataRepository
 from storage.quality_repository import QualityRunRepository
-from ui.components import loading_indicator, render_empty_state, render_get_started_workflow, render_html_table, render_page_header
+from ui.components import loading_indicator, render_empty_state, render_get_started_workflow, render_html_table, render_page_header, table_to_csv
 from ui.connection_workflow import (
     ACTIVE_CONNECTION_ID_KEY,
     render_connected_sources_table,
@@ -57,6 +58,11 @@ QUALITY_REVIEW_READY_KEY = "quality_review_ready"
 QUALITY_RUN_IN_PROGRESS_KEY = "quality_run_in_progress"
 QUALITY_REVIEW_DETAIL_KEY = "quality_review_detail_selection"
 QUALITY_REVIEW_DETAIL_CACHE_KEY = "quality_review_detail_cache"
+QUALITY_REVIEW_RECORD_CACHE_KEY = "quality_review_record_cache"
+QUALITY_REVIEW_ALL_RECORD_CACHE_KEY = "quality_review_all_record_cache"
+QUALITY_REVIEW_ALL_RECORDS_OPEN_KEY = "quality_review_all_records_open"
+QUALITY_REVIEW_RULE_RECORDS_OPEN_KEY = "quality_review_rule_records_open"
+QUALITY_FAILED_RECORD_VIEW_LIMIT = 100
 QUALITY_RESULT_RUN_ID_KEY = "quality_execution_run_id"
 QUALITY_HISTORY_DATASET_KEY = "quality_history_dataset"
 QUALITY_AI_RESULT_KEY = "quality_ai_suggestion_result"
@@ -139,6 +145,10 @@ def _invalidate_execution_result() -> None:
         QUALITY_RESULT_RULE_SIGNATURE_KEY,
         QUALITY_REVIEW_DETAIL_KEY,
         QUALITY_REVIEW_DETAIL_CACHE_KEY,
+        QUALITY_REVIEW_RECORD_CACHE_KEY,
+        QUALITY_REVIEW_ALL_RECORD_CACHE_KEY,
+        QUALITY_REVIEW_ALL_RECORDS_OPEN_KEY,
+        QUALITY_REVIEW_RULE_RECORDS_OPEN_KEY,
         QUALITY_RESULT_RUN_ID_KEY,
     ):
         st.session_state.pop(key, None)
@@ -216,6 +226,8 @@ def _run_quality_checks(
     st.session_state[QUALITY_RESULT_RUN_ID_KEY] = run_id
     st.session_state[QUALITY_HISTORY_DATASET_KEY] = dataset_id
     st.session_state[QUALITY_REVIEW_DETAIL_CACHE_KEY] = {}
+    st.session_state[QUALITY_REVIEW_RECORD_CACHE_KEY] = {}
+    st.session_state[QUALITY_REVIEW_ALL_RECORD_CACHE_KEY] = {}
     try:
         QualityRunRepository().save_quality_run(run_id, report, user_id=current_user_id())
     except Exception:
@@ -602,40 +614,185 @@ def _render_quality_result_detail(selected_table: TableMetadata, result: Quality
             )
     if result.status != "FAIL":
         return
-    if result.rule_type == "not_null":
-        st.info(f"Failed condition: NULL · {result.failed_records:,} failed records")
-        return
 
     run_id = st.session_state.get(QUALITY_RESULT_RUN_ID_KEY, "")
     cache_key = "|".join((str(run_id), result.rule_type, result.column, json.dumps(result.rule_config, sort_keys=True, default=str)))
-    detail_cache = st.session_state.setdefault(QUALITY_REVIEW_DETAIL_CACHE_KEY, {})
-    if cache_key not in detail_cache:
+    connector = _active_connector_for(selected_table)
+    if connector is None:
+        st.info("A live source connection is required to inspect detailed failure records.")
+        return
+    rule_payload = {"rule_type": result.rule_type, "column": result.column, **result.rule_config}
+
+    if result.rule_type == "not_null":
+        st.info(f"Failed condition: NULL · {result.failed_records:,} failed records")
+    else:
+        detail_cache = st.session_state.setdefault(QUALITY_REVIEW_DETAIL_CACHE_KEY, {})
+        if cache_key not in detail_cache:
+            try:
+                detail_cache[cache_key] = QualityRuleEngine().inspect_failed_values(
+                    connector, selected_table, rule_payload, limit=FAILURE_DETAIL_LIMIT
+                )
+            except Exception as exc:
+                detail_cache[cache_key] = {"error": safe_connection_error(str(exc))}
+        detail = detail_cache[cache_key]
+        if isinstance(detail, dict) and "error" in detail:
+            st.info(f"Detailed failure values could not be loaded: {detail['error']}")
+        elif not detail:
+            st.caption("No grouped failure values are available for this rule.")
+        else:
+            st.markdown('<div class="section-kicker quality-detail-heading">FAILED VALUES</div>', unsafe_allow_html=True)
+            render_html_table(
+                [{"Failed Value": "NULL" if item["failed_value"] is None else item["failed_value"], "Count": f'{item["failure_count"]:,}'} for item in detail],
+                table_id="quality-failed-values",
+                download=False,
+                column_widths=[75, 25],
+                max_visible_rows=4,
+                sticky_header=True,
+                scrollable=True,
+            )
+
+    is_records_open = st.session_state.get(QUALITY_REVIEW_RULE_RECORDS_OPEN_KEY) == cache_key
+    record_toggle_key = f"quality-view-failed-records-{re.sub(r'[^A-Za-z0-9_-]+', '-', cache_key)[:120]}"
+    if st.button(
+        "Hide Failed Records" if is_records_open else "View Failed Records",
+        key=record_toggle_key,
+        icon=":material/expand_less:" if is_records_open else ":material/expand_more:",
+        type="tertiary",
+    ):
+        st.session_state[QUALITY_REVIEW_RULE_RECORDS_OPEN_KEY] = None if is_records_open else cache_key
+        st.rerun()
+    if not is_records_open:
+        return
+
+    record_cache = st.session_state.setdefault(QUALITY_REVIEW_RECORD_CACHE_KEY, {})
+    if cache_key not in record_cache:
+        try:
+            engine = QualityRuleEngine()
+            record_cache[cache_key] = {
+                "view": engine.inspect_failed_records(
+                    connector, selected_table, rule_payload, limit=QUALITY_FAILED_RECORD_VIEW_LIMIT
+                ),
+                "all": engine.inspect_failed_records(connector, selected_table, rule_payload, limit=None),
+            }
+        except Exception as exc:
+            record_cache[cache_key] = {"error": safe_connection_error(str(exc))}
+    records = record_cache[cache_key]
+    if isinstance(records, dict) and "error" in records:
+        st.info(f"Failed records could not be loaded: {records['error']}")
+        return
+    all_records = records.get("all", [])
+    view_records = records.get("view", [])
+    if len(all_records) != result.failed_records:
+        st.warning(
+            f"The source returned {len(all_records):,} failed records, but the quality result reports "
+            f"{result.failed_records:,}. Review is unavailable until the counts agree."
+        )
+        return
+    if not all_records:
+        return
+    st.markdown('<div class="section-kicker quality-detail-heading">FAILED RECORDS</div>', unsafe_allow_html=True)
+    context_columns = st.columns([1, 0.34], vertical_alignment="center")
+    with context_columns[0]:
+        st.caption(f"{len(all_records):,} failed records · Showing up to {len(view_records):,} rows")
+        st.caption("Live source rows for the current quality run; historical row snapshots are not persisted.")
+    with context_columns[1]:
+        filename_parts = [
+            "failed_records", selected_table.source_type, selected_table.database_name,
+            selected_table.schema_name, selected_table.table_name, result.rule_type, result.column,
+            datetime.now().strftime("%Y%m%d"),
+        ]
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "_", "_".join(str(part) for part in filename_parts)).strip("._") + ".csv"
+        with st.container(key="quality-failed-records-download"):
+            st.download_button(
+                "Download Failed Records",
+                data=table_to_csv(all_records),
+                file_name=filename,
+                mime="text/csv",
+                icon=":material/download:",
+                key=f"quality_failed_records_download_{cache_key}",
+                type="tertiary",
+            )
+    render_html_table(
+        view_records,
+        table_id="quality-failed-records",
+        download=False,
+        max_visible_rows=7,
+        sticky_header=True,
+        scrollable=True,
+        table_class="failed-records",
+        fill_available_width=True,
+    )
+
+
+def _render_all_failed_records(selected_table: TableMetadata, report: QualityReport) -> None:
+    failed_results = [result for result in report.results if result.status == "FAIL" and result.failed_records > 0]
+    if not failed_results:
+        return
+
+    is_open = bool(st.session_state.get(QUALITY_REVIEW_ALL_RECORDS_OPEN_KEY, False))
+    if st.button(
+        "Hide All Failed Records" if is_open else "View All Failed Records",
+        key="quality-view-all-failed-records",
+        icon=":material/expand_less:" if is_open else ":material/expand_more:",
+        type="tertiary",
+    ):
+        st.session_state[QUALITY_REVIEW_ALL_RECORDS_OPEN_KEY] = not is_open
+        st.rerun()
+    if not is_open:
+        return
+
+    run_id = st.session_state.get(QUALITY_RESULT_RUN_ID_KEY, "")
+    cache_key = f"{run_id}|{_dataset_id(selected_table)}"
+    record_cache = st.session_state.setdefault(QUALITY_REVIEW_ALL_RECORD_CACHE_KEY, {})
+    if cache_key not in record_cache:
         connector = _active_connector_for(selected_table)
         if connector is None:
-            st.info("A live source connection is required to inspect detailed failure values.")
+            st.info("A live source connection is required to inspect all failed records.")
             return
         try:
-            detail_cache[cache_key] = QualityRuleEngine().inspect_failed_values(
-                connector,
-                selected_table,
-                {"rule_type": result.rule_type, "column": result.column, **result.rule_config},
-                limit=FAILURE_DETAIL_LIMIT,
+            record_cache[cache_key] = QualityRuleEngine().inspect_all_failed_records(
+                connector, selected_table, failed_results, rule_label=_quality_rule_label
             )
         except Exception as exc:
-            detail_cache[cache_key] = {"error": safe_connection_error(str(exc))}
-    detail = detail_cache[cache_key]
-    if isinstance(detail, dict) and "error" in detail:
-        st.info(f"Detailed failure values could not be loaded: {detail['error']}")
+            record_cache[cache_key] = {"error": safe_connection_error(str(exc))}
+    records = record_cache[cache_key]
+    if isinstance(records, dict) and "error" in records:
+        st.info(f"All failed records could not be loaded: {records['error']}")
         return
-    if not detail:
-        st.caption("No grouped failure values are available for this rule.")
+    if not records:
+        st.info("No failed source records are available for this quality run.")
         return
-    st.markdown('<div class="section-kicker quality-detail-heading">FAILED VALUES</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-kicker quality-detail-heading">ALL FAILED RECORDS</div>', unsafe_allow_html=True)
+    context_columns = st.columns([1, 0.4], vertical_alignment="center")
+    with context_columns[0]:
+        st.caption(f"{len(records):,} unique failed records · Current quality run")
+        st.caption("Rows are deduplicated by complete source-row values; historical row snapshots are not persisted.")
+    with context_columns[1]:
+        filename_parts = [
+            "all_failed_records", selected_table.source_type, selected_table.database_name,
+            selected_table.schema_name, selected_table.table_name, datetime.now().strftime("%Y%m%d"),
+        ]
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "_", "_".join(str(part) for part in filename_parts)).strip("._") + ".csv"
+        with st.container(key="quality-all-failed-records-download"):
+            st.download_button(
+                "Download All Failed Records",
+                data=table_to_csv(records),
+                file_name=filename,
+                mime="text/csv",
+                icon=":material/download:",
+                key="quality_all_failed_records_download",
+                type="tertiary",
+            )
     render_html_table(
-        [{"Failed Value": "NULL" if item["failed_value"] is None else item["failed_value"], "Count": f'{item["failure_count"]:,}'} for item in detail],
-        table_id="quality-failed-values",
+        records[:QUALITY_FAILED_RECORD_VIEW_LIMIT],
+        table_id="quality-all-failed-records",
         download=False,
-        column_widths=[75, 25],
+        max_visible_rows=7,
+        sticky_header=True,
+        scrollable=True,
+        table_class="failed-records-with-reason",
+        fill_available_width=True,
     )
 
 
@@ -731,6 +888,7 @@ def _render_quality_review(selected_table: TableMetadata) -> None:
             "Message": _table_secondary,
         },
     )
+    _render_all_failed_records(selected_table, report)
     detail_results = [result for result in report.results if result.status in {"FAIL", "ERROR"}]
     if detail_results:
         detail_placeholder = "Select a failed or errored rule"
@@ -831,6 +989,9 @@ def _render_quality_history(selected_table: TableMetadata) -> None:
         table_id="quality-recent-runs",
         download=False,
         column_widths=[34, 17, 12, 12, 12, 13],
+        max_visible_rows=5,
+        sticky_header=True,
+        scrollable=True,
     )
 
 

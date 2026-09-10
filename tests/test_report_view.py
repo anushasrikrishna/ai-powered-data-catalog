@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from documentation import MetadataDocumentationGenerator
 from metadata.models import ColumnMetadata, TableMetadata
 from quality.rule_engine import QualityReport, QualityResult
-from ui.report_view import build_column_profiles, build_metadata_summary, failed_results, format_profile_value, quality_health
+from storage.scan_history import ScanSnapshot
+from ui.report_view import build_catalog_report_context, build_column_profiles, build_metadata_summary, failed_results, format_profile_value, quality_health
 from ui.report_export import PDF_TABLE_HEADER_BACKGROUND, build_export_filename, render_html_report, render_markdown_report, render_pdf_report
 from ui.report_view import build_report_context
 
@@ -137,6 +138,35 @@ class TestReportView(unittest.TestCase):
         self.assertIn('ParagraphStyle("PdfTableHeader"', source)
         self.assertIn("textColor=colors.white", source)
         self.assertIn('repeatRows=1', source)
+
+    def test_catalog_report_exports_and_first_scan_sections(self) -> None:
+        latest = ScanSnapshot(
+            scan_id=2, source_type="sqlserver", database_name="catalog", schema_name="dbo", table_name="orders",
+            table_type="TABLE", scanned_at="2026-08-31T10:00:00+00:00", row_count=105,
+            columns=tuple(self.table.columns),
+        )
+        previous = ScanSnapshot(
+            scan_id=1, source_type="sqlserver", database_name="catalog", schema_name="dbo", table_name="orders",
+            table_type="TABLE", scanned_at="2026-08-30T10:00:00+00:00", row_count=100,
+            columns=tuple(self.table.columns[:2]),
+        )
+        first_context = build_catalog_report_context(self.table, [latest])
+        first_markdown = render_markdown_report(first_context)
+        self.assertNotIn("## Dataset Evolution", first_markdown)
+        self.assertNotIn("## Scan History", first_markdown)
+
+        context = build_catalog_report_context(self.table, [latest, previous])
+        markdown = render_markdown_report(context)
+        html = render_html_report(context)
+        pdf = render_pdf_report(context)
+        self.assertIn("# Data Catalog Report", markdown)
+        self.assertIn("## Dataset Evolution", markdown)
+        self.assertIn("## Change Summary", markdown)
+        self.assertIn("## Scan History", markdown)
+        self.assertIn("DATA CATALOG REPORT", html)
+        self.assertIn("Column Metadata", html)
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        self.assertEqual(build_export_filename(context, "pdf", generated_on=datetime(2026, 8, 31)), "catalog_dbo_orders_catalog_report_2026-08-31.pdf")
 
 
 if __name__ == "__main__":

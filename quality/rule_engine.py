@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+import json
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -152,6 +153,76 @@ class QualityRuleEngine:
         return [
             {"failed_value": row.get("failed_value"), "failure_count": int(row.get("failure_count") or 0)}
             for row in rows
+        ]
+
+    def inspect_failed_records(
+        self,
+        connector: Any,
+        table_metadata: TableMetadata,
+        rule: QualityRule | dict[str, Any],
+        *,
+        limit: int | None = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Retrieve complete rows failing a rule through its source dialect.
+
+        ``limit`` bounds the inspection view.  Passing ``None`` is reserved for
+        an explicit complete-result export and keeps the query semantics shared
+        with the quality execution dialect.
+        """
+        validated_rule = parse_quality_rule(rule)
+        self._validate_rule_against_metadata(table_metadata, validated_rule)
+        dialect = self._dialect_for(table_metadata.source_type)
+        engine = getattr(connector, "engine", None)
+        if engine is None:
+            raise ValueError("connector must expose a SQLAlchemy engine")
+        builder = getattr(dialect, "build_failed_records_statement", None)
+        if builder is None:
+            return []
+        statement = builder(engine, table_metadata, validated_rule, limit=limit, offset=offset)
+        if statement is None:
+            return []
+        with engine.connect() as connection:
+            return [dict(row) for row in connection.execute(statement, self._parameters(validated_rule)).mappings().all()]
+
+    def inspect_all_failed_records(
+        self,
+        connector: Any,
+        table_metadata: TableMetadata,
+        results: Iterable[QualityResult],
+        *,
+        rule_label: Callable[[str], str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Aggregate complete failed rows across the failed rules in one run."""
+        columns = [column.column_name for column in table_metadata.columns]
+        aggregate: dict[tuple[str, ...], dict[str, Any]] = {}
+        labeler = rule_label or (lambda value: value.replace("_", " ").title())
+        for result in results:
+            if result.status != "FAIL" or result.failed_records <= 0:
+                continue
+            rows = self.inspect_failed_records(
+                connector,
+                table_metadata,
+                {"rule_type": result.rule_type, "column": result.column, **result.rule_config},
+                limit=None,
+            )
+            reason = f"{result.column}: {labeler(result.rule_type)}"
+            occurrences: dict[tuple[str, ...], int] = {}
+            for row in rows:
+                row_identity = tuple(json.dumps(row.get(column), default=str, sort_keys=True) for column in columns)
+                occurrence = occurrences.get(row_identity, 0)
+                occurrences[row_identity] = occurrence + 1
+                identity = (*row_identity, str(occurrence))
+                entry = aggregate.get(identity)
+                if entry is None:
+                    entry = {column: row.get(column) for column in columns}
+                    entry["Failed Reason"] = []
+                    aggregate[identity] = entry
+                if reason not in entry["Failed Reason"]:
+                    entry["Failed Reason"].append(reason)
+        return [
+            {**{column: entry[column] for column in columns}, "Failed Reason": ", ".join(entry["Failed Reason"])}
+            for entry in aggregate.values()
         ]
 
     def _dialect_for(self, source_type: str) -> QualityDialect:
